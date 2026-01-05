@@ -561,10 +561,7 @@ dependencies = [
  "base64",
  "libmpv2",
  "reqwest",
- "serde",
  "serde_json",
- "tempfile",
- "tmpfile",
  "tokio",
 ]
 
@@ -1005,12 +1002,6 @@ dependencies = [
  "displaydoc",
  "zerovec",
 ]
-
-[[package]]
-name = "tmpfile"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70792bb5e9b3c542ef963da937f81eb674d90e1952d9f18ddb21dbaa46b78aee"
 
 [[package]]
 name = "tokio"

@@ -170,94 +170,12 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
-    // loop {
-    //     print!("Enter song name (or q to quit): ");
-    //     stdout().flush().unwrap();
-    //     let mut name = String::new();
-    //     stdin().read_line(&mut name).unwrap();
-    //     let name = name.trim();
-    //     if name.eq_ignore_ascii_case("q") {
-    //         break;
-    //     }
-    //     let data = search_result(name).await.unwrap();
-    //     println!("\nResults: ");
-    //     let items = data
-    //         .get("data")
-    //         .and_then(|d| d.get("items"))
-    //         .and_then(|arr| arr.as_array());
-    //     if let Some(items) = items {
-    //         let items = &items[..items.len().min(5)];
-    //         for (i, track) in items.iter().enumerate() {
-    //             let title = track
-    //                 .get("title")
-    //                 .and_then(Value::as_str)
-    //                 .unwrap_or("Unknown Title");
-    //             let artist = track
-    //                 .get("artist")
-    //                 .and_then(|a| a.get("name"))
-    //                 .and_then(Value::as_str)
-    //                 .unwrap_or("Unknown Artist");
-    //             println!("{}. {} - {}", i + 1, title, artist);
-    //         }
-
-    //         print!("\nSelect track number: ");
-    //         stdout().flush().unwrap();
-    //         let mut input = String::new();
-    //         stdin().read_line(&mut input).unwrap();
-    //         let choice: usize = input.trim().parse().unwrap_or(0);
-    //         if choice > 0 && choice <= items.len() {
-    //             let track = &items[choice - 1];
-    //             let id: i32 = track
-    //                 .get("id")
-    //                 .and_then(Value::as_i64)
-    //                 .map(|v| v as i32)
-    //                 .unwrap_or(0);
-    //             let mut audio_quality: &str = track
-    //                 .get("audioQuality")
-    //                 .and_then(Value::as_str)
-    //                 .unwrap_or("LOSSLESS");
-    //             let tags = track
-    //                 .get("mediaMetadata")
-    //                 .and_then(|v| v.get("tags"))
-    //                 .and_then(Value::as_array)
-    //                 .unwrap();
-    //             let qual = "HIRES_LOSSLESS";
-    //             if tags.iter().any(|v| v.as_str() == Some(qual)) {
-    //                 audio_quality = "HI_RES_LOSSLESS";
-    //             }
-    //             let song = get_song(id, audio_quality).await.unwrap();
-    //             let manifest = song
-    //                 .get("data")
-    //                 .and_then(|v| v.get("manifest"))
-    //                 .and_then(Value::as_str);
-    //             let decoded = decode_base64(manifest.unwrap());
-    //             if decoded.starts_with("<?xml") {
-    //                 queue_mpd_song(&mut mpv, &decoded);
-    //             } else {
-    //                 if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
-    //                     if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
-    //                         if let Some(first_url) = urls.first().and_then(Value::as_str) {
-    //                             queue_song(&mut mpv, first_url);
-    //                         } else {
-    //                             println!("'urls' array is empty or first element is not a string");
-    //                         }
-    //                     } else {
-    //                         println!("No 'urls' array found");
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     } else {
-    //         continue;
-    //     }
-    //     println!("");
-    // }
     loop {
-        print!("Options: (p)ause, p(l)ay, (h)alt, (s)kip, (a)dd a song -> ");
+        print!("Options: (p)ause, p(l)ay, (h)alt, (s)kip, (v#)olume, (a)dd a song -> ");
         stdout().flush().unwrap();
         let mut s = String::new();
         stdin().read_line(&mut s).expect("Failed to read line");
-        let name = s.trim();
+        let name = s.trim().to_lowercase();
         if name.eq_ignore_ascii_case("h") {
             break;
         } else if name.eq_ignore_ascii_case("p") {
@@ -268,6 +186,9 @@ async fn main() {
             mpv.command("playlist-next", &["force"]).unwrap();
         } else if name.eq_ignore_ascii_case("a") {
             add_song(&mut mpv).await;
+        } else if name.starts_with("v") {
+            let val: i64 = name[1..].parse().unwrap_or(50);
+            mpv.set_property("volume", val).unwrap();
         }
     }
 }
