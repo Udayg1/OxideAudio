@@ -187,8 +187,15 @@ async fn main() {
         } else if name.eq_ignore_ascii_case("a") {
             add_song(&mut mpv).await;
         } else if name.starts_with("v") {
-            let val: i64 = name[1..].parse().unwrap_or(50);
-            mpv.set_property("volume", val).unwrap();
+            if name.len() > 1 {
+                let val: i64 = match name[1..].parse() {
+                    Ok(v) => v,
+                    Err(_e) => {
+                        continue;
+                    }
+                };
+                mpv.set_property("volume", val).unwrap();
+            }
         }
     }
 }
