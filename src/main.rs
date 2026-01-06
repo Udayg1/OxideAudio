@@ -3,8 +3,8 @@ use libmpv2::Mpv;
 use reqwest::header::USER_AGENT;
 use serde_json;
 use serde_json::Value;
+use std::env;
 use std::io::{Write, stdin, stdout};
-use std::{env};
 
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0";
 const QUERYBASE: &str = "https://maus.qqdl.site/search/?s=";
@@ -52,7 +52,7 @@ fn decode_base64(encoded: &str) -> String {
     return String::from_utf8(decoded).unwrap();
 }
 
-fn queue_mpd_song(mpv: &mut Mpv, mpd: &str) {
+fn queue_mpd_song(mpv: &mut Mpv, mpd: &str, init: i32) {
     use std::fs::OpenOptions;
     use std::io::Write;
     let path = format!("{}/mpd_file.mpd", env::temp_dir().display());
@@ -64,15 +64,19 @@ fn queue_mpd_song(mpv: &mut Mpv, mpd: &str) {
         .unwrap();
     writeln!(f, "{}", mpd).unwrap();
     f.flush().unwrap();
-    queue_song(mpv, &path);
+    queue_song(mpv, &path, init);
 }
 
-fn queue_song(mpv: &mut Mpv, url: &str) {
+fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
     let idle: bool = mpv.get_property("idle-active").unwrap();
     if idle {
         let _ = mpv.command("loadfile", &[url, "replace"]);
     } else {
-        let _ = mpv.command("loadfile", &[url, "append-play"]);
+        if init == 1 {
+            let _ = mpv.command("loadfile", &[url, "append-play"]);
+        } else {
+            let _ = mpv.command("loadfile", &[url, "append"]);
+        }
     }
 }
 
@@ -111,10 +115,11 @@ async fn get_token() -> Result<Value, reqwest::Error> {
 async fn queue_similar(json: &[Value], mpv: &mut Mpv) {
     for item in json.iter().take(7) {
         let iid = item.get("id").and_then(|v| v.as_str()).unwrap();
-        let id:i32 = iid.parse().unwrap();
+        let id: i32 = iid.parse().unwrap();
         let mut audio_quality = "LOSSLESS";
         let qualities: Vec<&str> = item
-            .get("attributes").and_then(|attr| attr.get("mediaTags"))
+            .get("attributes")
+            .and_then(|attr| attr.get("mediaTags"))
             .and_then(|v| v.as_array())
             .unwrap()
             .iter()
@@ -125,15 +130,19 @@ async fn queue_similar(json: &[Value], mpv: &mut Mpv) {
             audio_quality = "HI_RES_LOSSLESS";
         }
         let res = get_song(id, audio_quality).await.unwrap();
-        let song = decode_base64(res.get("data").and_then(|d| d.get("manifest")).and_then(|v| v.as_str()).unwrap());
-        if song.starts_with("<xml"){
-            queue_mpd_song(mpv, &song);
-        }
-        else{
+        let song = decode_base64(
+            res.get("data")
+                .and_then(|d| d.get("manifest"))
+                .and_then(|v| v.as_str())
+                .unwrap(),
+        );
+        if song.starts_with("<xml") {
+            queue_mpd_song(mpv, &song, 0);
+        } else {
             if let Ok(json) = serde_json::from_str::<Value>(&song) {
                 if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
                     if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                        queue_song(mpv, first_url);
+                        queue_song(mpv, first_url, 0);
                     } else {
                         eprintln!("'urls' array is empty or first element is not a string");
                     }
@@ -207,12 +216,12 @@ async fn add_song(mpv: &mut Mpv, token: &str) {
                 .and_then(Value::as_str);
             let decoded = decode_base64(manifest.unwrap());
             if decoded.starts_with("<?xml") {
-                queue_mpd_song(mpv, &decoded);
+                queue_mpd_song(mpv, &decoded, 1);
             } else {
                 if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                     if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
                         if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                            queue_song(mpv, first_url);
+                            queue_song(mpv, first_url, 1);
                         } else {
                             println!("'urls' array is empty or first element is not a string");
                         }
@@ -221,25 +230,14 @@ async fn add_song(mpv: &mut Mpv, token: &str) {
                     }
                 }
             }
-            let res = match get_similar(id, token).await{
+            let res = match get_similar(id, token).await {
                 Ok(v) => v,
-                Err(_e) => {return}
+                Err(_e) => return,
             };
-            let included = match res.get("included").and_then(|v| v.as_array()){
+            let included = match res.get("included").and_then(|v| v.as_array()) {
                 Some(v) => v,
-                None => {return}
+                None => return,
             };
-            // println!("{res}");
-            // for item in included {
-            //     let id = item.get("id").and_then(|v| v.as_str()).unwrap();
-            //     let title = item
-            //         .get("attributes")
-            //         .and_then(|a| a.get("title"))
-            //         .and_then(|t| t.as_str())
-            //         .unwrap();
-            //     println!("{}", item);
-            //     println!("id = {id}, title = {}", title);
-            // }
             queue_similar(included, mpv).await;
         }
     }
