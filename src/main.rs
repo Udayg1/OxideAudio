@@ -3,8 +3,8 @@ use libmpv2::Mpv;
 use reqwest::header::USER_AGENT;
 use serde_json;
 use serde_json::Value;
-use std::env;
 use std::io::{Write, stdin, stdout};
+use std::{env};
 
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0";
 const QUERYBASE: &str = "https://maus.qqdl.site/search/?s=";
@@ -68,15 +68,84 @@ fn queue_mpd_song(mpv: &mut Mpv, mpd: &str) {
 }
 
 fn queue_song(mpv: &mut Mpv, url: &str) {
-    let idle: bool = mpv.get_property("idle_active").unwrap_or(true);
+    let idle: bool = mpv.get_property("idle-active").unwrap();
     if idle {
         let _ = mpv.command("loadfile", &[url, "replace"]);
     } else {
-        let _ = mpv.command("loadfile", &[url, "append"]);
+        let _ = mpv.command("loadfile", &[url, "append-play"]);
     }
 }
 
-async fn add_song(mpv: &mut Mpv) {
+async fn get_similar(id: i32, token: &str) -> Result<Value, reqwest::Error> {
+    let url = format!(
+        "https://openapi.tidal.com/v2/tracks/{}/relationships/similarTracks?countryCode=US&include=similarTracks",
+        id
+    );
+    let client = reqwest::Client::new();
+    let response: Value = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await?
+        .json()
+        .await?;
+    Ok(response)
+}
+
+async fn get_token() -> Result<Value, reqwest::Error> {
+    let client = reqwest::Client::new();
+
+    let res = client
+            .post("https://auth.tidal.com/v1/oauth2/token")
+            .header(
+                "Authorization",
+                "Basic Rkhlc3g3bnZudlVsQVVqeTpuTzVOZUYxVEV0WW04cDBPbnU2NnZwMGxVY2p2Qk5pOVZJTlR0WTR2ZjBnPQ==",
+            )
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body("grant_type=client_credentials")
+            .send()
+            .await?.json().await?;
+    Ok(res)
+}
+
+async fn queue_similar(json: &[Value], mpv: &mut Mpv) {
+    for item in json.iter().take(7) {
+        let iid = item.get("id").and_then(|v| v.as_str()).unwrap();
+        let id:i32 = iid.parse().unwrap();
+        let mut audio_quality = "LOSSLESS";
+        let qualities: Vec<&str> = item
+            .get("attributes").and_then(|attr| attr.get("mediaTags"))
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|tag| tag.as_str())
+            .collect();
+        let qual = "HIRES_LOSSLESS";
+        if qualities.iter().any(|v| v as &str == qual) {
+            audio_quality = "HI_RES_LOSSLESS";
+        }
+        let res = get_song(id, audio_quality).await.unwrap();
+        let song = decode_base64(res.get("data").and_then(|d| d.get("manifest")).and_then(|v| v.as_str()).unwrap());
+        if song.starts_with("<xml"){
+            queue_mpd_song(mpv, &song);
+        }
+        else{
+            if let Ok(json) = serde_json::from_str::<Value>(&song) {
+                if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
+                    if let Some(first_url) = urls.first().and_then(Value::as_str) {
+                        queue_song(mpv, first_url);
+                    } else {
+                        eprintln!("'urls' array is empty or first element is not a string");
+                    }
+                } else {
+                    eprintln!("No 'urls' array found");
+                }
+            }
+        }
+    }
+}
+
+async fn add_song(mpv: &mut Mpv, token: &str) {
     print!("Enter song name (or q to quit): ");
     stdout().flush().unwrap();
     let mut name = String::new();
@@ -152,6 +221,26 @@ async fn add_song(mpv: &mut Mpv) {
                     }
                 }
             }
+            let res = match get_similar(id, token).await{
+                Ok(v) => v,
+                Err(_e) => {return}
+            };
+            let included = match res.get("included").and_then(|v| v.as_array()){
+                Some(v) => v,
+                None => {return}
+            };
+            // println!("{res}");
+            // for item in included {
+            //     let id = item.get("id").and_then(|v| v.as_str()).unwrap();
+            //     let title = item
+            //         .get("attributes")
+            //         .and_then(|a| a.get("title"))
+            //         .and_then(|t| t.as_str())
+            //         .unwrap();
+            //     println!("{}", item);
+            //     println!("id = {id}, title = {}", title);
+            // }
+            queue_similar(included, mpv).await;
         }
     }
 }
@@ -170,8 +259,10 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
+    let resp = get_token().await.unwrap();
+    let token = resp.get("access_token").and_then(Value::as_str).unwrap();
     loop {
-        print!("Options: (p)ause, p(l)ay, (h)alt, (s)kip, (v#)olume, (a)dd a song -> ");
+        print!("Options: (p)ause, (r)esume, (h)alt, (s)kip, (v#)olume, (a)dd a song -> ");
         stdout().flush().unwrap();
         let mut s = String::new();
         stdin().read_line(&mut s).expect("Failed to read line");
@@ -180,12 +271,12 @@ async fn main() {
             break;
         } else if name.eq_ignore_ascii_case("p") {
             mpv.set_property("pause", true).unwrap();
-        } else if name.eq_ignore_ascii_case("l") {
+        } else if name.eq_ignore_ascii_case("r") {
             mpv.set_property("pause", false).unwrap();
         } else if name.eq_ignore_ascii_case("s") {
             mpv.command("playlist-next", &["force"]).unwrap();
         } else if name.eq_ignore_ascii_case("a") {
-            add_song(&mut mpv).await;
+            add_song(&mut mpv, token).await;
         } else if name.starts_with("v") {
             if name.len() > 1 {
                 let val: i64 = match name[1..].parse() {
