@@ -73,7 +73,8 @@ fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
         let _ = mpv.command("loadfile", &[url, "replace"]);
     } else {
         if init == 1 {
-            let _ = mpv.command("loadfile", &[url, "append-play"]);
+            let pos: i64 = mpv.get_property("playlist-pos").unwrap();
+            mpv.command("loadfile", &[url, "insert-at", &(pos + 1).to_string()]).unwrap();
         } else {
             let _ = mpv.command("loadfile", &[url, "append"]);
         }
