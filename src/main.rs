@@ -7,7 +7,7 @@ use std::env;
 use std::io::{Write, stdin, stdout};
 
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0";
-const QUERYBASE: &str = "https://maus.qqdl.site/search/?s=";
+const QUERYBASE: &str = "https://triton.squid.wtf/search/?s=";
 const STREAM: &str = "https://tidal.kinoplus.online/track/?";
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
@@ -165,12 +165,18 @@ async fn add_song(mpv: &mut Mpv, token: &str) {
     if name.eq_ignore_ascii_case("q") {
         return;
     }
+    if name.is_empty() {
+        return;
+    }
     let data = search_result(name).await.unwrap();
-    println!("\nResults: ");
     let items = data
         .get("data")
         .and_then(|d| d.get("items"))
         .and_then(|arr| arr.as_array());
+    if items.unwrap().is_empty() {
+        return;
+    }
+    println!("\nResults: ");
     if let Some(items) = items {
         let items = &items[..items.len().min(5)];
         for (i, track) in items.iter().enumerate() {
