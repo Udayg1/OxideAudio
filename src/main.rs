@@ -74,7 +74,8 @@ fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
     } else {
         if init == 1 {
             let pos: i64 = mpv.get_property("playlist-pos").unwrap();
-            mpv.command("loadfile", &[url, "insert-at", &(pos + 1).to_string()]).unwrap();
+            mpv.command("loadfile", &[url, "insert-at", &(pos + 1).to_string()])
+                .unwrap();
         } else {
             let _ = mpv.command("loadfile", &[url, "append"]);
         }
@@ -261,7 +262,9 @@ async fn main() {
     let resp = get_token().await.unwrap();
     let token = resp.get("access_token").and_then(Value::as_str).unwrap();
     loop {
-        print!("Options: (p)ause, (r)esume, (h)alt, (s)kip, (v#)olume, (a)dd a song -> ");
+        print!(
+            "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
+        );
         stdout().flush().unwrap();
         let mut s = String::new();
         stdin().read_line(&mut s).expect("Failed to read line");
@@ -270,6 +273,16 @@ async fn main() {
             break;
         } else if name.eq_ignore_ascii_case("p") {
             mpv.set_property("pause", true).unwrap();
+        } else if name.starts_with("f") {
+            if name.len() > 1 {
+                let val: i64 = match name[1..].parse() {
+                    Ok(v) => v,
+                    Err(_e) => {
+                        continue;
+                    }
+                };
+                let _ = mpv.command("seek", &[&format!("{}", val), "relative"]);
+            }
         } else if name.eq_ignore_ascii_case("r") {
             mpv.set_property("pause", false).unwrap();
         } else if name.eq_ignore_ascii_case("s") {
