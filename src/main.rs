@@ -1,13 +1,13 @@
 use base64::{Engine as _, engine::general_purpose};
 use libmpv2::Mpv;
+use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
-use reqwest::{Client, Response};
 use serde_json;
 use serde_json::{Value, json};
 use std::env;
 use std::io::{Write, stdin, stdout};
 
-const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:145.0) Gecko/20100101 Firefox/145.0";
+const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/145.0";
 const QUERYBASE: &str = "https://triton.squid.wtf/search/?s=";
 const STREAM: &str = "https://tidal.kinoplus.online/track/?";
 
@@ -162,36 +162,37 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .await;
     let resn = res.unwrap();
     // println!("{resn}");
-    let first = resn.get("contents")
-           .and_then(Value::as_object)
-           .and_then(|c| c.get("tabbedSearchResultsRenderer"))
-           .and_then(|t| t.get("tabs"))
-           .and_then(Value::as_array)
-           .and_then(|tabs| tabs.get(0))
-           .and_then(|tab| tab.get("tabRenderer"))
-           .and_then(|tab| tab.get("content"))
-           .and_then(|content| content.get("sectionListRenderer"))
-           .and_then(|slr| slr.get("contents"))
-           .and_then(Value::as_array)
-           .and_then(|sections| sections.get(0))
-           .and_then(|section| section.get("musicShelfRenderer"))
-           .and_then(|msr| msr.get("contents"))
-           .and_then(Value::as_array)
-           .and_then(|items| items.get(0))
-           .and_then(|item| item.get("musicResponsiveListItemRenderer"))
-           .and_then(|mr| mr.get("flexColumns"))
-           .and_then(Value::as_array)
-           .and_then(|cols| cols.get(0))
-           .and_then(|col| col.get("musicResponsiveListItemFlexColumnRenderer"))
-           .and_then(|flex| flex.get("text"))
-           .and_then(|text| text.get("runs"))
-           .and_then(Value::as_array)
-           .and_then(|runs| runs.get(0))
-           .and_then(|run| run.get("navigationEndpoint"))
-           .and_then(|ne| ne.get("watchEndpoint"))
-           .and_then(|we| we.get("videoId"))
-           .and_then(Value::as_str)
-           .map(|s| s.to_string());
+    let first = resn
+        .get("contents")
+        .and_then(Value::as_object)
+        .and_then(|c| c.get("tabbedSearchResultsRenderer"))
+        .and_then(|t| t.get("tabs"))
+        .and_then(Value::as_array)
+        .and_then(|tabs| tabs.get(0))
+        .and_then(|tab| tab.get("tabRenderer"))
+        .and_then(|tab| tab.get("content"))
+        .and_then(|content| content.get("sectionListRenderer"))
+        .and_then(|slr| slr.get("contents"))
+        .and_then(Value::as_array)
+        .and_then(|sections| sections.get(0))
+        .and_then(|section| section.get("musicShelfRenderer"))
+        .and_then(|msr| msr.get("contents"))
+        .and_then(Value::as_array)
+        .and_then(|items| items.get(0))
+        .and_then(|item| item.get("musicResponsiveListItemRenderer"))
+        .and_then(|mr| mr.get("flexColumns"))
+        .and_then(Value::as_array)
+        .and_then(|cols| cols.get(0))
+        .and_then(|col| col.get("musicResponsiveListItemFlexColumnRenderer"))
+        .and_then(|flex| flex.get("text"))
+        .and_then(|text| text.get("runs"))
+        .and_then(Value::as_array)
+        .and_then(|runs| runs.get(0))
+        .and_then(|run| run.get("navigationEndpoint"))
+        .and_then(|ne| ne.get("watchEndpoint"))
+        .and_then(|we| we.get("videoId"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string());
     // println!("{first}");
     first
 }
@@ -530,7 +531,7 @@ async fn add_song(mpv: &mut Mpv) {
                         .and_then(|v| v.get("title"))
                         .unwrap()
                         .to_string();
-                    if let Some(new_id) = convert_to_ytm(&name).await{
+                    if let Some(new_id) = convert_to_ytm(&name).await {
                         let ndat = get_songlink_data(&new_id, "y").await;
                         let nid = extract_tidal_id(&ndat);
                         if !nid.is_none() {
