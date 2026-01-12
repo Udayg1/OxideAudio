@@ -88,7 +88,6 @@ async fn get_songlink_data(id: &str, source: &str) -> Value {
     let client = reqwest::Client::new();
     let response = client
         .get(&url)
-        // .header("Authorization", format!("Bearer {}", token))
         .header(USER_AGENT, AGENT)
         .send()
         .await
@@ -142,7 +141,7 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
             }
         },
         "query": name,
-        "params": "EgWKAQIIAWoKEAMQBBAFEAoQCQ%3D%3D", // songs-only filter
+        "params": "EgWKAQIIAWoKEAMQBBAFEAoQCQ%3D%3D", 
         "inlineSettingStatus": "INLINE_SETTING_STATUS_ON"
     });
 
@@ -161,7 +160,6 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .json::<Value>()
         .await;
     let resn = res.unwrap();
-    // println!("{resn}");
     let first = resn
         .get("contents")
         .and_then(Value::as_object)
@@ -193,7 +191,6 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .and_then(|we| we.get("videoId"))
         .and_then(Value::as_str)
         .map(|s| s.to_string());
-    // println!("{first}");
     first
 }
 
@@ -218,7 +215,7 @@ async fn get_ytrecs(ytid: &str) -> Value {
                 "gl": "CA",
                 "deviceMake": "",
                 "deviceModel": "",
-                "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0,gzip(gfe)",
+                "userAgent": AGENT,
                 "clientName": "WEB_REMIX",
                 "clientVersion": "1.20260107.03.00",
                 "osName": "X11",
@@ -227,8 +224,6 @@ async fn get_ytrecs(ytid: &str) -> Value {
                 "platform": "DESKTOP",
                 "clientFormFactor": "UNKNOWN_FORM_FACTOR",
                 "userInterfaceTheme": "USER_INTERFACE_THEME_DARK",
-                "browserName": "Firefox",
-                "browserVersion": "146.0",
                 "acceptHeader": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "screenWidthPoints": 1852,
                 "screenHeightPoints": 661,
@@ -255,7 +250,7 @@ async fn get_ytrecs(ytid: &str) -> Value {
     });
     let resp = client
         .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json").header(USER_AGENT, AGENT)
         .header(
             "Referer",
             format!(
@@ -267,10 +262,6 @@ async fn get_ytrecs(ytid: &str) -> Value {
         .send()
         .await
         .unwrap();
-    // resp.text()
-    // let text = resp.text().await.unwrap();
-    // // println!("{}",text);
-    // serde_json::from_str(&text).unwrap()
     resp.json::<Value>().await.unwrap()
 }
 
@@ -284,7 +275,6 @@ fn get_ytrec_array(recs: Value) -> Vec<String> {
         .and_then(Value::as_array)
         .and_then(|a| a.get(0))
         .unwrap();
-    // println!("{tab0}");
     let cont = tab0
         .get("tabRenderer")
         .and_then(|v| v.get("content"))
@@ -294,10 +284,9 @@ fn get_ytrec_array(recs: Value) -> Vec<String> {
         .and_then(|v| v.get("contents"))
         .and_then(Value::as_array)
         .unwrap();
-    // println!("{}", cont[0]);
     cont.iter()
-        .skip(1) // start from second object
-        .take(10) // take 8 objects
+        .skip(1) 
+        .take(10)
         .filter_map(|item| {
             item.get("playlistPanelVideoRenderer")
                 .and_then(|v| v.get("videoId"))
@@ -307,34 +296,14 @@ fn get_ytrec_array(recs: Value) -> Vec<String> {
         .collect()
 }
 
-// async fn _get_similar(id: i32, _token: &str) -> Result<Response, reqwest::Error> {
-//     // let url = format!(
-//     //     "https://openapi.tidal.com/v2/tracks/{}/relationships/radio?include=radio&shareCode=xyz",
-//     //     id
-//     // );
-//     let url = format!("https://song.link/t/{}", id);
-//     let client = reqwest::Client::new();
-//     let response = client
-//         .get(&url)
-//         // .header("Authorization", format!("Bearer {}", token))
-//         .header(USER_AGENT, AGENT)
-//         .send()
-//         .await;
-//     // .json()
-//     // .await?;
-//     Ok(response?)
-// }
 
 fn extract_tidal_id(json: &Value) -> Option<String> {
-    // Navigate to sections
     let sections = json
         .get("props")?
         .get("pageProps")?
         .get("pageData")?
         .get("sections")?
         .as_array()?;
-
-    // Iterate over sections
     for section in sections {
         if let Some(links) = section.get("links").and_then(|l| l.as_array()) {
             for link in links {
@@ -354,25 +323,20 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
 }
 
 fn extract_ytmusic_id(json: &Value) -> Option<String> {
-    // Navigate to sections
     let sections = json
         .get("props")?
         .get("pageProps")?
         .get("pageData")?
         .get("sections")?
         .as_array()?;
-
-    // Iterate over sections
     for section in sections {
         if let Some(links) = section.get("links").and_then(|l| l.as_array()) {
             for link in links {
                 if link.get("platform")?.as_str()? == "youtubeMusic" {
-                    // Extract the YouTube Music ID from uniqueId
                     if let Some(unique_id) = link.get("uniqueId")?.as_str() {
-                        // uniqueId is like "youtube|song|xpzbVXZRQLo"
                         let parts: Vec<&str> = unique_id.split('|').collect();
                         if parts.len() == 3 {
-                            return Some(parts[2].to_string()); // "xpzbVXZRQLo"
+                            return Some(parts[2].to_string()); 
                         }
                     }
                 }
@@ -382,48 +346,6 @@ fn extract_ytmusic_id(json: &Value) -> Option<String> {
 
     None
 }
-
-// async fn _queue_similar(json: &[Value], mpv: &mut Mpv) {
-//     for item in json.iter().take(7) {
-//         let iid = item.get("id").and_then(|v| v.as_str()).unwrap();
-//         let id: i32 = iid.parse().unwrap();
-//         let mut audio_quality = "LOSSLESS";
-//         let qualities: Vec<&str> = item
-//             .get("attributes")
-//             .and_then(|attr| attr.get("mediaTags"))
-//             .and_then(|v| v.as_array())
-//             .unwrap()
-//             .iter()
-//             .filter_map(|tag| tag.as_str())
-//             .collect();
-//         let qual = "HIRES_LOSSLESS";
-//         if qualities.iter().any(|v| v as &str == qual) {
-//             audio_quality = "HI_RES_LOSSLESS";
-//         }
-//         let res = get_song(id, audio_quality).await.unwrap();
-//         let song = decode_base64(
-//             res.get("data")
-//                 .and_then(|d| d.get("manifest"))
-//                 .and_then(|v| v.as_str())
-//                 .unwrap(),
-//         );
-//         if song.starts_with("<xml") {
-//             queue_mpd_song(mpv, &song, 0);
-//         } else {
-//             if let Ok(json) = serde_json::from_str::<Value>(&song) {
-//                 if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
-//                     if let Some(first_url) = urls.first().and_then(Value::as_str) {
-//                         queue_song(mpv, first_url, 0);
-//                     } else {
-//                         eprintln!("'urls' array is empty or first element is not a string");
-//                     }
-//                 } else {
-//                     eprintln!("No 'urls' array found");
-//                 }
-//             }
-//         }
-//     }
-// }
 
 async fn add_song(mpv: &mut Mpv) {
     print!("Enter song name (or q to quit): ");
@@ -541,7 +463,6 @@ async fn add_song(mpv: &mut Mpv) {
                 }
             }
             for i in narr {
-                // println!("{i}");
                 let dat = get_song(i.parse::<i32>().unwrap(), "LOSSLESS")
                     .await
                     .unwrap();
@@ -584,8 +505,6 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
-    // let resp = get_token().await.unwrap();
-    // let token = resp.get("access_token").and_then(Value::as_str).unwrap();
     loop {
         print!(
             "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
