@@ -141,7 +141,7 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
             }
         },
         "query": name,
-        "params": "EgWKAQIIAWoKEAMQBBAFEAoQCQ%3D%3D", 
+        "params": "EgWKAQIIAWoKEAMQBBAFEAoQCQ%3D%3D",
         "inlineSettingStatus": "INLINE_SETTING_STATUS_ON"
     });
 
@@ -160,9 +160,9 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .json::<Value>()
         .await;
     let resn = res.unwrap();
-    let first = resn
+    let first : Option<String>;
+    let arr = resn
         .get("contents")
-        .and_then(Value::as_object)
         .and_then(|c| c.get("tabbedSearchResultsRenderer"))
         .and_then(|t| t.get("tabs"))
         .and_then(Value::as_array)
@@ -172,25 +172,53 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .and_then(|content| content.get("sectionListRenderer"))
         .and_then(|slr| slr.get("contents"))
         .and_then(Value::as_array)
-        .and_then(|sections| sections.get(0))
-        .and_then(|section| section.get("musicShelfRenderer"))
-        .and_then(|msr| msr.get("contents"))
-        .and_then(Value::as_array)
-        .and_then(|items| items.get(0))
-        .and_then(|item| item.get("musicResponsiveListItemRenderer"))
-        .and_then(|mr| mr.get("flexColumns"))
-        .and_then(Value::as_array)
-        .and_then(|cols| cols.get(0))
-        .and_then(|col| col.get("musicResponsiveListItemFlexColumnRenderer"))
-        .and_then(|flex| flex.get("text"))
-        .and_then(|text| text.get("runs"))
-        .and_then(Value::as_array)
-        .and_then(|runs| runs.get(0))
-        .and_then(|run| run.get("navigationEndpoint"))
-        .and_then(|ne| ne.get("watchEndpoint"))
-        .and_then(|we| we.get("videoId"))
-        .and_then(Value::as_str)
-        .map(|s| s.to_string());
+        .unwrap();
+    let zero_index = arr.get(0).unwrap();
+    let first_index = arr.get(1).unwrap();
+    let con = zero_index.get("musicShelfRenderer");
+    if !con.is_none() {
+        first = con.unwrap()
+            .get("musicShelfRenderer")
+            .and_then(|msr| msr.get("contents"))
+            .and_then(Value::as_array)
+            .and_then(|items| items.get(0))
+            .and_then(|item| item.get("musicResponsiveListItemRenderer"))
+            .and_then(|mr| mr.get("flexColumns"))
+            .and_then(Value::as_array)
+            .and_then(|cols| cols.get(0))
+            .and_then(|col| col.get("musicResponsiveListItemFlexColumnRenderer"))
+            .and_then(|flex| flex.get("text"))
+            .and_then(|text| text.get("runs"))
+            .and_then(Value::as_array)
+            .and_then(|runs| runs.get(0))
+            .and_then(|run| run.get("navigationEndpoint"))
+            .and_then(|ne| ne.get("watchEndpoint"))
+            .and_then(|we| we.get("videoId"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+    } else {
+        first = first_index.get("musicShelfRenderer")
+                .and_then(|msr| msr.get("contents"))
+                .and_then(Value::as_array)
+                .and_then(|items| items.get(0))
+                .and_then(|item| item.get("musicResponsiveListItemRenderer"))
+                .and_then(|mr| mr.get("flexColumns"))
+                .and_then(Value::as_array)
+                .and_then(|cols| cols.get(0))
+                .and_then(|col| col.get("musicResponsiveListItemFlexColumnRenderer"))
+                .and_then(|flex| flex.get("text"))
+                .and_then(|text| text.get("runs"))
+                .and_then(Value::as_array)
+                .and_then(|runs| runs.get(0))
+                .and_then(|run| run.get("navigationEndpoint"))
+                .and_then(|ne| ne.get("watchEndpoint"))
+                .and_then(|we| we.get("videoId"))
+                .and_then(Value::as_str)
+                .map(|s| s.to_string());
+    }
+    if first.is_none() {
+        eprint!("{resn}");
+    }
     first
 }
 
@@ -250,7 +278,8 @@ async fn get_ytrecs(ytid: &str) -> Value {
     });
     let resp = client
         .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
-        .header("Content-Type", "application/json").header(USER_AGENT, AGENT)
+        .header("Content-Type", "application/json")
+        .header(USER_AGENT, AGENT)
         .header(
             "Referer",
             format!(
@@ -265,7 +294,7 @@ async fn get_ytrecs(ytid: &str) -> Value {
     resp.json::<Value>().await.unwrap()
 }
 
-fn get_ytrec_array(recs: Value) -> Vec<String> {
+fn get_ytrec_array(recs: Value) -> Vec<Value> {
     let tab0 = recs
         .get("contents")
         .and_then(|v| v.get("singleColumnMusicWatchNextResultsRenderer"))
@@ -284,18 +313,25 @@ fn get_ytrec_array(recs: Value) -> Vec<String> {
         .and_then(|v| v.get("contents"))
         .and_then(Value::as_array)
         .unwrap();
-    cont.iter()
-        .skip(1) 
-        .take(10)
-        .filter_map(|item| {
-            item.get("playlistPanelVideoRenderer")
-                .and_then(|v| v.get("videoId"))
-                .and_then(Value::as_str)
-                .map(|s| s.to_string())
-        })
-        .collect()
+    let mut arr = Vec::new();
+    for i in cont.iter().skip(1).take(10) {
+        let id = i
+            .get("playlistPanelVideoRenderer")
+            .and_then(|v| v.get("videoId"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+        let name = i
+            .get("playlistPanelVideoRenderer")
+            .and_then(|v| v.get("title"))
+            .and_then(|v| v.get("runs"))
+            .and_then(Value::as_array)
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("text"));
+        let jso = json!({"id": id, "name": name});
+        arr.push(jso);
+    }
+    arr
 }
-
 
 fn extract_tidal_id(json: &Value) -> Option<String> {
     let sections = json
@@ -322,7 +358,7 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
     None
 }
 
-fn extract_ytmusic_id(json: &Value) -> Option<String> {
+fn _extract_ytmusic_id(json: &Value) -> Option<String> {
     let sections = json
         .get("props")?
         .get("pageProps")?
@@ -336,7 +372,7 @@ fn extract_ytmusic_id(json: &Value) -> Option<String> {
                     if let Some(unique_id) = link.get("uniqueId")?.as_str() {
                         let parts: Vec<&str> = unique_id.split('|').collect();
                         if parts.len() == 3 {
-                            return Some(parts[2].to_string()); 
+                            return Some(parts[2].to_string());
                         }
                     }
                 }
@@ -345,6 +381,36 @@ fn extract_ytmusic_id(json: &Value) -> Option<String> {
     }
 
     None
+}
+
+async fn get_quality(id: &str, name: &str) -> String {
+    let parsed = id.parse::<i64>().unwrap();
+    let res = search_result(name).await.unwrap();
+    let item = res
+        .get("data")
+        .and_then(|v| v.get("items"))
+        .and_then(Value::as_array)
+        .unwrap();
+    let mut quality = "LOSSLESS".to_string();
+    if item.is_empty() {
+        quality
+    } else {
+        for i in item {
+            let intermediate = i.get("id").and_then(Value::as_i64).unwrap();
+            if parsed == intermediate {
+                let qual = "HIRES_LOSSLESS";
+                let tags = i
+                    .get("mediaMetadata")
+                    .and_then(|v| v.get("tags"))
+                    .and_then(Value::as_array)
+                    .unwrap();
+                if tags.iter().any(|v| v.as_str() == Some(qual)) {
+                    quality = "HI_RES_LOSSLESS".to_string();
+                }
+            }
+        }
+        quality
+    }
 }
 
 async fn add_song(mpv: &mut Mpv) {
@@ -429,60 +495,53 @@ async fn add_song(mpv: &mut Mpv) {
                     }
                 }
             }
-            let res = get_songlink_data(&format!("{}", id), "t").await;
-            let nid = extract_ytmusic_id(&res).unwrap();
-            let njson = get_ytrecs(&nid).await;
+            let new_iid = convert_to_ytm(name).await.unwrap();
+            let njson = get_ytrecs(&new_iid).await;
             let arr = get_ytrec_array(njson);
             let mut narr = Vec::new();
-
+            let mut counter = 0;
             for item in &arr {
-                let data = get_songlink_data(item, "y").await;
-                // println!("{data}");
-                let id = extract_tidal_id(&data);
-                if !id.is_none() {
-                    let nn = id.unwrap();
-                    narr.push(nn);
+                let name = item.get("name").and_then(Value::as_str).unwrap();
+                let id = item.get("id").and_then(Value::as_str).unwrap();
+                let songlink_data = get_songlink_data(id, "y").await;
+                let tidal_id = extract_tidal_id(&songlink_data);
+                if !tidal_id.is_none() {
+                    narr.push(json!({"id": tidal_id.unwrap(), "name":name}));
+                    counter += 1;
                 } else {
-                    let name = data
-                        .get("props")
-                        .and_then(|v| v.get("pageProps"))
-                        .and_then(|v| v.get("pageData"))
-                        .and_then(|v| v.get("sections"))
-                        .and_then(Value::as_array)
-                        .and_then(|v| v.get(0))
-                        .and_then(|v| v.get("title"))
-                        .unwrap()
-                        .to_string();
-                    if let Some(new_id) = convert_to_ytm(&name).await {
-                        let ndat = get_songlink_data(&new_id, "y").await;
-                        let nid = extract_tidal_id(&ndat);
-                        if !nid.is_none() {
-                            narr.push(nid.unwrap());
-                        }
-                    }
+                    eprintln!("DEBUG::failed to queue {name}");
                 }
             }
+            eprintln!("DEBUG::queued {counter} songs");
             for i in narr {
-                let dat = get_song(i.parse::<i32>().unwrap(), "LOSSLESS")
+                let new_new_id = i.get("id").and_then(Value::as_str).unwrap();
+                let new_new_name = i.get("name").and_then(Value::as_str).unwrap();
+                let quality = get_quality(new_new_id, new_new_name).await;
+                let dat = get_song(new_new_id.parse::<i32>().unwrap(), &quality)
                     .await
                     .unwrap();
                 let manifest = dat
                     .get("data")
                     .and_then(|v| v.get("manifest"))
                     .and_then(Value::as_str);
-                let decoded = decode_base64(manifest.unwrap());
-                if decoded.starts_with("<?xml") {
-                    queue_mpd_song(mpv, &decoded, 1);
-                } else {
-                    if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
-                        if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
-                            if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                                queue_song(mpv, first_url, 1);
+                if !Some(manifest).is_none() {
+                    eprintln!("DEBUG::queued {new_new_name}-{quality}");
+                    let decoded = decode_base64(manifest.unwrap());
+                    if decoded.starts_with("<?xml") {
+                        queue_mpd_song(mpv, &decoded, 1);
+                    } else {
+                        if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
+                            if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
+                                if let Some(first_url) = urls.first().and_then(Value::as_str) {
+                                    queue_song(mpv, first_url, 1);
+                                } else {
+                                    println!(
+                                        "'urls' array is empty or first element is not a string"
+                                    );
+                                }
                             } else {
-                                println!("'urls' array is empty or first element is not a string");
+                                println!("No 'urls' array found");
                             }
-                        } else {
-                            println!("No 'urls' array found");
                         }
                     }
                 }

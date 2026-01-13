@@ -1,3 +1,10 @@
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
 [package]
 name = "mscply"
 version = "0.1.0"
