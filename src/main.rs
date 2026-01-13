@@ -178,8 +178,7 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
     let con = zero_index.get("musicShelfRenderer");
     if !con.is_none() {
         first = con.unwrap()
-            .get("musicShelfRenderer")
-            .and_then(|msr| msr.get("contents"))
+            .get("contents")
             .and_then(Value::as_array)
             .and_then(|items| items.get(0))
             .and_then(|item| item.get("musicResponsiveListItemRenderer"))
