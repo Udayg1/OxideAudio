@@ -74,8 +74,7 @@ fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
         let _ = mpv.command("loadfile", &[url, "replace"]);
     } else {
         if init == 1 {
-            let pos: i64 = mpv.get_property("playlist-pos").unwrap();
-            mpv.command("loadfile", &[url, "insert-at", &(pos + 1).to_string()])
+            mpv.command("loadfile", &[url, "insert-next-play"])
                 .unwrap();
         } else {
             let _ = mpv.command("loadfile", &[url, "append"]);
@@ -353,32 +352,7 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
             }
         }
     }
-
-    None
-}
-
-fn _extract_ytmusic_id(json: &Value) -> Option<String> {
-    let sections = json
-        .get("props")?
-        .get("pageProps")?
-        .get("pageData")?
-        .get("sections")?
-        .as_array()?;
-    for section in sections {
-        if let Some(links) = section.get("links").and_then(|l| l.as_array()) {
-            for link in links {
-                if link.get("platform")?.as_str()? == "youtubeMusic" {
-                    if let Some(unique_id) = link.get("uniqueId")?.as_str() {
-                        let parts: Vec<&str> = unique_id.split('|').collect();
-                        if parts.len() == 3 {
-                            return Some(parts[2].to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
+    eprintln!("DEBUG::Tidal extraction failed :::: {json}");
     None
 }
 
@@ -508,7 +482,7 @@ async fn add_song(mpv: &mut Mpv) {
                     narr.push(json!({"id": tidal_id.unwrap(), "name":name}));
                     counter += 1;
                 } else {
-                    eprintln!("DEBUG::failed to queue {name}");
+                    eprintln!("DEBUG::failed to queue {name} - {id}");
                 }
             }
             eprintln!("DEBUG::queued {counter} songs");
@@ -527,12 +501,12 @@ async fn add_song(mpv: &mut Mpv) {
                     eprintln!("DEBUG::queued {new_new_name}-{quality}");
                     let decoded = decode_base64(manifest.unwrap());
                     if decoded.starts_with("<?xml") {
-                        queue_mpd_song(mpv, &decoded, 1);
+                        queue_mpd_song(mpv, &decoded, 0);
                     } else {
                         if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                             if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
                                 if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                                    queue_song(mpv, first_url, 1);
+                                    queue_song(mpv, first_url, 0);
                                 } else {
                                     println!(
                                         "'urls' array is empty or first element is not a string"
@@ -547,6 +521,7 @@ async fn add_song(mpv: &mut Mpv) {
             }
         }
     }
+    println!("");
 }
 
 #[tokio::main]
