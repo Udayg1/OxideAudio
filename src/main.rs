@@ -361,12 +361,20 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
 async fn get_quality(id: &str) -> String {
     let cli = Client::new();
     let res = cli.get(format!("https://hund.qqdl.site/info/?id={}", id.trim())).header(USER_AGENT, AGENT).header(REFERER, "https://tidal.squid.wtf/").send().await.unwrap().json::<Value>().await.unwrap();
-    let mut quality = res.get("data").and_then(|v| v.get("audioQuality")).and_then(Value::as_str).unwrap();
-    let tags = res.get("data").and_then(|v| v.get("mediaMetadata")).and_then(|v| v.get("tags")).and_then(Value::as_array).unwrap();
-    if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")){
-        quality = "HI_RES_LOSSLESS";
-    }
+    // println!("{res} --- {id}");
+    let qual = res.get("data").and_then(|v| v.get("audioQuality")).and_then(Value::as_str);
+    if !qual.is_none(){
+        let mut quality = qual.unwrap();
+        let tags = res.get("data").and_then(|v| v.get("mediaMetadata")).and_then(|v| v.get("tags")).and_then(Value::as_array).unwrap();
+        if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")){
+            quality = "HI_RES_LOSSLESS";
+        }
     quality.to_string()
+    }
+    else {
+        "".to_string()
+    }
+
 }
 
 async fn add_song(mpv: &mut Mpv) {
@@ -468,11 +476,15 @@ async fn add_song(mpv: &mut Mpv) {
                     eprintln!("DEBUG::failed to queue {name} - {id}");
                 }
             }
-            eprintln!("DEBUG::queued {counter} songs");
+            eprintln!("DEBUG::found {counter} songs");
             for i in narr {
                 let new_new_id = i.get("id").and_then(Value::as_str).unwrap();
                 let new_new_name = i.get("name").and_then(Value::as_str).unwrap();
                 let quality = get_quality(new_new_id).await;
+                if quality.is_empty(){
+                    eprintln!("skipping {new_new_name} --- {new_new_id}");
+                    continue;
+                }
                 let dat = get_song(new_new_id.parse::<i32>().unwrap(), &quality)
                     .await
                     .unwrap();
