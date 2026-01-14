@@ -9,7 +9,7 @@ use std::io::{Write, stdin, stdout};
 
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/145.0";
 const QUERYBASE: &str = "https://triton.squid.wtf/search/?s=";
-const STREAM: &str = "https://tidal.kinoplus.online/track/?";
+const STREAM: &str = "https://triton.squid.wtf/track/?";
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
     let fin_url = format!("{}id={}&quality={}", STREAM, id, audio_quality);
@@ -74,8 +74,7 @@ fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
         let _ = mpv.command("loadfile", &[url, "replace"]);
     } else {
         if init == 1 {
-            mpv.command("loadfile", &[url, "insert-next-play"])
-                .unwrap();
+            mpv.command("loadfile", &[url, "insert-next-play"]).unwrap();
         } else {
             let _ = mpv.command("loadfile", &[url, "append"]);
         }
@@ -159,7 +158,7 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .json::<Value>()
         .await;
     let resn = res.unwrap();
-    let first : Option<String>;
+    let first: Option<String>;
     let arr = resn
         .get("contents")
         .and_then(|c| c.get("tabbedSearchResultsRenderer"))
@@ -176,7 +175,8 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
     let first_index = arr.get(1);
     let con = zero_index.get("musicShelfRenderer");
     if !con.is_none() {
-        first = con.unwrap()
+        first = con
+            .unwrap()
             .get("contents")
             .and_then(Value::as_array)
             .and_then(|items| items.get(0))
@@ -195,24 +195,26 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
             .and_then(Value::as_str)
             .map(|s| s.to_string());
     } else {
-        first = first_index.unwrap().get("musicShelfRenderer")
-                .and_then(|msr| msr.get("contents"))
-                .and_then(Value::as_array)
-                .and_then(|items| items.get(0))
-                .and_then(|item| item.get("musicResponsiveListItemRenderer"))
-                .and_then(|mr| mr.get("flexColumns"))
-                .and_then(Value::as_array)
-                .and_then(|cols| cols.get(0))
-                .and_then(|col| col.get("musicResponsiveListItemFlexColumnRenderer"))
-                .and_then(|flex| flex.get("text"))
-                .and_then(|text| text.get("runs"))
-                .and_then(Value::as_array)
-                .and_then(|runs| runs.get(0))
-                .and_then(|run| run.get("navigationEndpoint"))
-                .and_then(|ne| ne.get("watchEndpoint"))
-                .and_then(|we| we.get("videoId"))
-                .and_then(Value::as_str)
-                .map(|s| s.to_string());
+        first = first_index
+            .unwrap()
+            .get("musicShelfRenderer")
+            .and_then(|msr| msr.get("contents"))
+            .and_then(Value::as_array)
+            .and_then(|items| items.get(0))
+            .and_then(|item| item.get("musicResponsiveListItemRenderer"))
+            .and_then(|mr| mr.get("flexColumns"))
+            .and_then(Value::as_array)
+            .and_then(|cols| cols.get(0))
+            .and_then(|col| col.get("musicResponsiveListItemFlexColumnRenderer"))
+            .and_then(|flex| flex.get("text"))
+            .and_then(|text| text.get("runs"))
+            .and_then(Value::as_array)
+            .and_then(|runs| runs.get(0))
+            .and_then(|run| run.get("navigationEndpoint"))
+            .and_then(|ne| ne.get("watchEndpoint"))
+            .and_then(|we| we.get("videoId"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
     }
     if first.is_none() {
         eprint!("{resn}");
@@ -356,34 +358,15 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
     None
 }
 
-async fn get_quality(id: &str, name: &str) -> String {
-    let parsed = id.parse::<i64>().unwrap();
-    let res = search_result(name).await.unwrap();
-    let item = res
-        .get("data")
-        .and_then(|v| v.get("items"))
-        .and_then(Value::as_array)
-        .unwrap();
-    let mut quality = "LOSSLESS".to_string();
-    if item.is_empty() {
-        quality
-    } else {
-        for i in item {
-            let intermediate = i.get("id").and_then(Value::as_i64).unwrap();
-            if parsed == intermediate {
-                let qual = "HIRES_LOSSLESS";
-                let tags = i
-                    .get("mediaMetadata")
-                    .and_then(|v| v.get("tags"))
-                    .and_then(Value::as_array)
-                    .unwrap();
-                if tags.iter().any(|v| v.as_str() == Some(qual)) {
-                    quality = "HI_RES_LOSSLESS".to_string();
-                }
-            }
-        }
-        quality
+async fn get_quality(id: &str) -> String {
+    let cli = Client::new();
+    let res = cli.get(format!("https://hund.qqdl.site/info/?id={}", id.trim())).header(USER_AGENT, AGENT).header(REFERER, "https://tidal.squid.wtf/").send().await.unwrap().json::<Value>().await.unwrap();
+    let mut quality = res.get("data").and_then(|v| v.get("audioQuality")).and_then(Value::as_str).unwrap();
+    let tags = res.get("data").and_then(|v| v.get("mediaMetadata")).and_then(|v| v.get("tags")).and_then(Value::as_array).unwrap();
+    if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")){
+        quality = "HI_RES_LOSSLESS";
     }
+    quality.to_string()
 }
 
 async fn add_song(mpv: &mut Mpv) {
@@ -489,7 +472,7 @@ async fn add_song(mpv: &mut Mpv) {
             for i in narr {
                 let new_new_id = i.get("id").and_then(Value::as_str).unwrap();
                 let new_new_name = i.get("name").and_then(Value::as_str).unwrap();
-                let quality = get_quality(new_new_id, new_new_name).await;
+                let quality = get_quality(new_new_id).await;
                 let dat = get_song(new_new_id.parse::<i32>().unwrap(), &quality)
                     .await
                     .unwrap();
@@ -497,8 +480,8 @@ async fn add_song(mpv: &mut Mpv) {
                     .get("data")
                     .and_then(|v| v.get("manifest"))
                     .and_then(Value::as_str);
-                if !Some(manifest).is_none() {
-                    eprintln!("DEBUG::queued {new_new_name}-{quality}");
+                if !manifest.is_none() {
+                    println!("DEBUG::queued {new_new_name}-{quality}");
                     let decoded = decode_base64(manifest.unwrap());
                     if decoded.starts_with("<?xml") {
                         queue_mpd_song(mpv, &decoded, 0);
