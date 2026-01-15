@@ -5,11 +5,19 @@ use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json;
 use serde_json::{Value, json};
 use std::env;
-use std::io::{Write, stdin, stdout};
+use std::io::{self, Write, stdin, stdout};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::Duration;
 
-const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/145.0";
+const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 const QUERYBASE: &str = "https://triton.squid.wtf/search/?s=";
 const STREAM: &str = "https://triton.squid.wtf/track/?";
+
+enum QueueItem {
+    Url(String),
+    Mpd(String),
+}
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
     let fin_url = format!("{}id={}&quality={}", STREAM, id, audio_quality);
@@ -70,15 +78,27 @@ fn queue_mpd_song(mpv: &mut Mpv, mpd: &str, init: i32) {
 
 fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
     let idle: bool = mpv.get_property("idle-active").unwrap();
+
+    // If mpv is idle, just start playing
     if idle {
-        let _ = mpv.command("loadfile", &[url, "replace"]);
-    } else {
-        if init == 1 {
-            mpv.command("loadfile", &[url, "insert-next-play"]).unwrap();
-        } else {
-            let _ = mpv.command("loadfile", &[url, "append"]);
-        }
+        mpv.command("loadfile", &[url, "replace"]).unwrap();
+        return;
     }
+
+    // Get current playlist position
+    let cur: i64 = mpv.get_property("playlist-pos").unwrap();
+
+    // init == 1 → play next
+    // init == 0 → append after the current insertion block
+    let insert_pos = if init == 1 {
+        cur + 1
+    } else {
+        // insert after the last queued item
+        mpv.get_property::<i64>("playlist-count").unwrap()
+    };
+
+    mpv.command("loadfile", &[url, "insert-at", &insert_pos.to_string()])
+        .unwrap();
 }
 
 async fn get_songlink_data(id: &str, source: &str) -> Value {
@@ -142,14 +162,14 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         "params": "EgWKAQIIAWoKEAMQBBAFEAoQCQ%3D%3D",
         "inlineSettingStatus": "INLINE_SETTING_STATUS_ON"
     });
-
+    let new: Vec<&str> = name.trim().split(' ').collect();
     let res = client
         .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
         .header(USER_AGENT, AGENT)
         .header(CONTENT_TYPE, "application/json")
         .header(
             REFERER,
-            format!("https://music.youtube.com/search?q={}", name),
+            format!("https://music.youtube.com/search?q={}", new.join("+")),
         )
         .json(&body)
         .send()
@@ -360,167 +380,177 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
 
 async fn get_quality(id: &str) -> String {
     let cli = Client::new();
-    let res = cli.get(format!("https://hund.qqdl.site/info/?id={}", id.trim())).header(USER_AGENT, AGENT).header(REFERER, "https://tidal.squid.wtf/").send().await.unwrap().json::<Value>().await.unwrap();
+    let res = cli
+        .get(format!("https://hund.qqdl.site/info/?id={}", id.trim()))
+        .header(USER_AGENT, AGENT)
+        .header(REFERER, "https://tidal.squid.wtf/")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
     // println!("{res} --- {id}");
-    let qual = res.get("data").and_then(|v| v.get("audioQuality")).and_then(Value::as_str);
-    if !qual.is_none(){
+    let qual = res
+        .get("data")
+        .and_then(|v| v.get("audioQuality"))
+        .and_then(Value::as_str);
+    if !qual.is_none() {
         let mut quality = qual.unwrap();
-        let tags = res.get("data").and_then(|v| v.get("mediaMetadata")).and_then(|v| v.get("tags")).and_then(Value::as_array).unwrap();
-        if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")){
+        let tags = res
+            .get("data")
+            .and_then(|v| v.get("mediaMetadata"))
+            .and_then(|v| v.get("tags"))
+            .and_then(Value::as_array)
+            .unwrap();
+        if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")) {
             quality = "HI_RES_LOSSLESS";
         }
-    quality.to_string()
-    }
-    else {
+        quality.to_string()
+    } else {
         "".to_string()
     }
-
 }
 
-async fn add_song(mpv: &mut Mpv) {
-    print!("Enter song name (or q to quit): ");
-    stdout().flush().unwrap();
-    let mut name = String::new();
-    stdin().read_line(&mut name).unwrap();
-    let name = name.trim();
-    if name.eq_ignore_ascii_case("q") {
-        return;
-    }
-    if name.is_empty() {
-        return;
-    }
-    let data = search_result(name).await.unwrap();
-    let items = data
-        .get("data")
-        .and_then(|d| d.get("items"))
-        .and_then(|arr| arr.as_array());
-    if items.unwrap().is_empty() {
-        return;
-    }
-    println!("\nResults: ");
-    if let Some(items) = items {
-        let items = &items[..items.len().min(5)];
-        for (i, track) in items.iter().enumerate() {
-            let title = track
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown Title");
-            let artist = track
-                .get("artist")
-                .and_then(|a| a.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown Artist");
-            println!("{}. {} - {}", i + 1, title, artist);
+async fn add_song(
+    mpv: &mut Mpv,
+    items: &Vec<Value>,
+    index: String,
+    name: String,
+    tx: Sender<QueueItem>,
+) {
+    let choice: usize = index.trim().parse().unwrap_or(0);
+    if choice > 0 && choice <= items.len() {
+        let track = &items[choice - 1];
+        let id: i32 = track
+            .get("id")
+            .and_then(Value::as_i64)
+            .map(|v| v as i32)
+            .unwrap_or(0);
+        let mut audio_quality: &str = track
+            .get("audioQuality")
+            .and_then(Value::as_str)
+            .unwrap_or("LOSSLESS");
+        let tags = track
+            .get("mediaMetadata")
+            .and_then(|v| v.get("tags"))
+            .and_then(Value::as_array)
+            .unwrap();
+        let qual = "HIRES_LOSSLESS";
+        if tags.iter().any(|v| v.as_str() == Some(qual)) {
+            audio_quality = "HI_RES_LOSSLESS";
         }
-
-        print!("\nSelect track number: ");
-        stdout().flush().unwrap();
-        let mut input = String::new();
-        stdin().read_line(&mut input).unwrap();
-        let choice: usize = input.trim().parse().unwrap_or(0);
-        if choice > 0 && choice <= items.len() {
-            let track = &items[choice - 1];
-            let id: i32 = track
-                .get("id")
-                .and_then(Value::as_i64)
-                .map(|v| v as i32)
-                .unwrap_or(0);
-            let mut audio_quality: &str = track
-                .get("audioQuality")
-                .and_then(Value::as_str)
-                .unwrap_or("LOSSLESS");
-            let tags = track
-                .get("mediaMetadata")
-                .and_then(|v| v.get("tags"))
-                .and_then(Value::as_array)
-                .unwrap();
-            let qual = "HIRES_LOSSLESS";
-            if tags.iter().any(|v| v.as_str() == Some(qual)) {
-                audio_quality = "HI_RES_LOSSLESS";
-            }
-            let song = get_song(id, audio_quality).await.unwrap();
-            let manifest = song
-                .get("data")
-                .and_then(|v| v.get("manifest"))
-                .and_then(Value::as_str);
-            let decoded = decode_base64(manifest.unwrap());
-            if decoded.starts_with("<?xml") {
-                queue_mpd_song(mpv, &decoded, 1);
-            } else {
-                if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
-                    if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
-                        if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                            queue_song(mpv, first_url, 1);
-                        } else {
-                            println!("'urls' array is empty or first element is not a string");
-                        }
+        let song = get_song(id, audio_quality).await.unwrap();
+        let manifest = song
+            .get("data")
+            .and_then(|v| v.get("manifest"))
+            .and_then(Value::as_str);
+        let decoded = decode_base64(manifest.unwrap());
+        if decoded.starts_with("<?xml") {
+            queue_mpd_song(mpv, &decoded, 1);
+        } else {
+            if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
+                if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
+                    if let Some(first_url) = urls.first().and_then(Value::as_str) {
+                        queue_song(mpv, first_url, 1);
                     } else {
-                        println!("No 'urls' array found");
+                        println!("'urls' array is empty or first element is not a string");
                     }
+                } else {
+                    println!("No 'urls' array found");
                 }
             }
-            let new_iid = convert_to_ytm(name).await.unwrap();
+        }
+    }
+    spawn_recommendation_worker(name, tx.clone());
+}
+
+fn spawn_input_thread(tx: Sender<String>) {
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        loop {
+            print!(
+                "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
+            );
+            stdout().flush().unwrap();
+            buf.clear();
+            if io::stdin().read_line(&mut buf).is_ok() {
+                let cmd = buf.trim().to_string();
+                tx.send(cmd.clone().trim().to_string()).unwrap();
+                if cmd == "a" {
+                    let mut name = String::new();
+                    stdin().read_line(&mut name).expect("");
+                    tx.send(name.trim().to_string()).unwrap();
+                    let mut index = String::new();
+                    stdin().read_line(&mut index).expect("");
+                    tx.send(index.trim().to_string()).unwrap();
+                }
+                // if tx.send(cmd.clone()).is_err() {
+                //     break;
+                // }
+            }
+        }
+    });
+}
+
+fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
+    thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async move {
+            let new_iid = convert_to_ytm(&name).await.unwrap();
+
             let njson = get_ytrecs(&new_iid).await;
             let arr = get_ytrec_array(njson);
-            let mut narr = Vec::new();
-            let mut counter = 0;
-            for item in &arr {
-                let name = item.get("name").and_then(Value::as_str).unwrap();
+
+            for item in arr.iter().take(10) {
+                let _name = item.get("name").and_then(Value::as_str).unwrap();
                 let id = item.get("id").and_then(Value::as_str).unwrap();
+
                 let songlink_data = get_songlink_data(id, "y").await;
                 let tidal_id = extract_tidal_id(&songlink_data);
-                if !tidal_id.is_none() {
-                    narr.push(json!({"id": tidal_id.unwrap(), "name":name}));
-                    counter += 1;
-                } else {
-                    eprintln!("DEBUG::failed to queue {name} - {id}");
-                }
-            }
-            eprintln!("DEBUG::found {counter} songs");
-            for i in narr {
-                let new_new_id = i.get("id").and_then(Value::as_str).unwrap();
-                let new_new_name = i.get("name").and_then(Value::as_str).unwrap();
-                let quality = get_quality(new_new_id).await;
-                if quality.is_empty(){
-                    eprintln!("skipping {new_new_name} --- {new_new_id}");
-                    continue;
-                }
-                let dat = get_song(new_new_id.parse::<i32>().unwrap(), &quality)
-                    .await
-                    .unwrap();
-                let manifest = dat
-                    .get("data")
-                    .and_then(|v| v.get("manifest"))
-                    .and_then(Value::as_str);
-                if !manifest.is_none() {
-                    println!("DEBUG::queued {new_new_name}-{quality}");
-                    let decoded = decode_base64(manifest.unwrap());
-                    if decoded.starts_with("<?xml") {
-                        queue_mpd_song(mpv, &decoded, 0);
-                    } else {
-                        if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
-                            if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
-                                if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                                    queue_song(mpv, first_url, 0);
-                                } else {
-                                    println!(
-                                        "'urls' array is empty or first element is not a string"
-                                    );
-                                }
-                            } else {
-                                println!("No 'urls' array found");
+
+                if let Some(tid) = tidal_id {
+                    let quality = get_quality(&tid).await;
+                    if quality.is_empty() {
+                        // eprintln!("Skipping {name} ({id})");
+                        continue;
+                    }
+                    let id: i32 = tid.parse().unwrap();
+                    if let Ok(res) = get_song(id, &quality).await {
+                        let manifest = res
+                            .get("data")
+                            .and_then(|d| d.get("manifest"))
+                            .and_then(Value::as_str)
+                            .unwrap();
+
+                        let decoded = decode_base64(manifest);
+                        // println!("WORKER: sending item");
+                        if decoded.starts_with("<?xml") {
+                            tx.send(QueueItem::Mpd(decoded)).ok();
+                        } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
+                            if let Some(url) = json
+                                .get("urls")
+                                .and_then(|v| v.as_array())
+                                .and_then(|a| a.first())
+                                .and_then(Value::as_str)
+                            {
+                                tx.send(QueueItem::Url(url.to_string())).ok();
                             }
                         }
                     }
+                } else {
+                    // eprintln!("DEBUG::failed {name} - {id}");
                 }
             }
-        }
-    }
-    println!("");
+        });
+    });
 }
 
 #[tokio::main]
 async fn main() {
+    let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
+    let (input_tx, input_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let mut mpv = match Mpv::new() {
         Ok(player) => player,
         Err(e) => {
@@ -533,44 +563,87 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
+    spawn_input_thread(input_tx);
     loop {
-        print!(
-            "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
-        );
-        stdout().flush().unwrap();
-        let mut s = String::new();
-        stdin().read_line(&mut s).expect("Failed to read line");
-        let name = s.trim().to_lowercase();
-        if name.eq_ignore_ascii_case("h") {
-            break;
-        } else if name.eq_ignore_ascii_case("p") {
-            mpv.set_property("pause", true).unwrap();
-        } else if name.starts_with("f") {
-            if name.len() > 1 {
-                let val: i64 = match name[1..].parse() {
-                    Ok(v) => v,
-                    Err(_e) => {
-                        continue;
-                    }
-                };
-                let _ = mpv.command("seek", &[&format!("{}", val), "relative"]);
-            }
-        } else if name.eq_ignore_ascii_case("r") {
-            mpv.set_property("pause", false).unwrap();
-        } else if name.eq_ignore_ascii_case("s") {
-            mpv.command("playlist-next", &["force"]).unwrap();
-        } else if name.eq_ignore_ascii_case("a") {
-            add_song(&mut mpv).await;
-        } else if name.starts_with("v") {
-            if name.len() > 1 {
-                let val: i64 = match name[1..].parse() {
-                    Ok(v) => v,
-                    Err(_e) => {
-                        continue;
-                    }
-                };
-                mpv.set_property("volume", val).unwrap();
+        while let Ok(item) = rx.try_recv() {
+            match item {
+                QueueItem::Url(url) => {
+                    queue_song(&mut mpv, &url, 1);
+                }
+                QueueItem::Mpd(mpd) => {
+                    queue_mpd_song(&mut mpv, &mpd, 1);
+                }
             }
         }
+        if let Ok(name) = input_rx.try_recv() {
+            if name.eq_ignore_ascii_case("h") {
+                break;
+            } else if name.eq_ignore_ascii_case("p") {
+                mpv.set_property("pause", true).unwrap();
+            } else if name.starts_with("f") {
+                if name.len() > 1 {
+                    let val: i64 = match name[1..].parse() {
+                        Ok(v) => v,
+                        Err(_e) => {
+                            continue;
+                        }
+                    };
+                    let _ = mpv.command("seek", &[&format!("{}", val), "relative"]);
+                }
+            } else if name.eq_ignore_ascii_case("r") {
+                mpv.set_property("pause", false).unwrap();
+            } else if name.eq_ignore_ascii_case("s") {
+                mpv.command("playlist-next", &["force"]).unwrap();
+            } else if name.eq_ignore_ascii_case("a") {
+                print!("Enter song name (q to exit): ");
+                stdout().flush().unwrap();
+                if let Ok(nammme) = input_rx.recv() {
+                    if nammme.is_empty() {
+                        continue;
+                    }
+                    let res = search_result(&nammme).await.unwrap();
+                    let data = res
+                        .get("data")
+                        .and_then(|v| v.get("items"))
+                        .and_then(Value::as_array)
+                        .unwrap();
+                    if data.is_empty() {
+                        continue;
+                    }
+                    println!("\nResults:");
+                    for (i, track) in data.iter().take(5).enumerate() {
+                        println!(
+                            "{}. {} - {}",
+                            i + 1,
+                            track
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Unknown"),
+                            track
+                                .get("artist")
+                                .and_then(|a| a.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("Unknown")
+                        )
+                    }
+                    print!("\nSelect track number: ");
+                    stdout().flush().unwrap();
+                    if let Ok(index) = input_rx.recv() {
+                        add_song(&mut mpv, data, index, nammme, tx.clone()).await;
+                    }
+                }
+            } else if name.starts_with("v") {
+                if name.len() > 1 {
+                    let val: i64 = match name[1..].parse() {
+                        Ok(v) => v,
+                        Err(_e) => {
+                            continue;
+                        }
+                    };
+                    mpv.set_property("volume", val).unwrap();
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
