@@ -480,7 +480,10 @@ fn spawn_input_thread(tx: Sender<String>) {
                 if cmd == "a" {
                     let mut name = String::new();
                     stdin().read_line(&mut name).expect("");
-                    tx.send(name.trim().to_string()).unwrap();
+                    tx.send(name.trim().to_string().clone()).unwrap();
+                    if name.trim().eq_ignore_ascii_case("q") {
+                        continue;
+                    }
                     let mut index = String::new();
                     stdin().read_line(&mut index).expect("");
                     tx.send(index.trim().to_string()).unwrap();
@@ -598,38 +601,37 @@ async fn main() {
                 print!("Enter song name (q to exit): ");
                 stdout().flush().unwrap();
                 if let Ok(nammme) = input_rx.recv() {
-                    if nammme.is_empty() {
-                        continue;
-                    }
-                    let res = search_result(&nammme).await.unwrap();
-                    let data = res
-                        .get("data")
-                        .and_then(|v| v.get("items"))
-                        .and_then(Value::as_array)
-                        .unwrap();
-                    if data.is_empty() {
-                        continue;
-                    }
-                    println!("\nResults:");
-                    for (i, track) in data.iter().take(5).enumerate() {
-                        println!(
-                            "{}. {} - {}",
-                            i + 1,
-                            track
-                                .get("title")
-                                .and_then(Value::as_str)
-                                .unwrap_or("Unknown"),
-                            track
-                                .get("artist")
-                                .and_then(|a| a.get("name"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("Unknown")
-                        )
-                    }
-                    print!("\nSelect track number: ");
-                    stdout().flush().unwrap();
-                    if let Ok(index) = input_rx.recv() {
-                        add_song(&mut mpv, data, index, nammme, tx.clone()).await;
+                    if !nammme.is_empty() && !nammme.eq_ignore_ascii_case("q") {
+                        let res = search_result(&nammme).await.unwrap();
+                        let data = res
+                            .get("data")
+                            .and_then(|v| v.get("items"))
+                            .and_then(Value::as_array)
+                            .unwrap();
+                        if data.is_empty() {
+                            continue;
+                        }
+                        println!("\nResults:");
+                        for (i, track) in data.iter().take(5).enumerate() {
+                            println!(
+                                "{}. {} - {}",
+                                i + 1,
+                                track
+                                    .get("title")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Unknown"),
+                                track
+                                    .get("artist")
+                                    .and_then(|a| a.get("name"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("Unknown")
+                            )
+                        }
+                        print!("\nSelect track number: ");
+                        stdout().flush().unwrap();
+                        if let Ok(index) = input_rx.recv() {
+                            add_song(&mut mpv, data, index, nammme, tx.clone()).await;
+                        }
                     }
                 }
             } else if name.starts_with("v") {
