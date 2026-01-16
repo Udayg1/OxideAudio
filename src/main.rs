@@ -4,15 +4,35 @@ use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json;
 use serde_json::{Value, json};
-use std::env;
 use std::io::{self, Write, stdin, stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
+use std::{env, fs};
 
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 const QUERYBASE: &str = "https://triton.squid.wtf/search/?s=";
 const STREAM: &str = "https://triton.squid.wtf/track/?";
+static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
+
+fn global_json() -> &'static Mutex<Value> {
+    ID_CACHE.get_or_init(|| {
+        let path = format!(
+            "{}/.local/share/mscply/cache.json",
+            env::var("HOME").unwrap()
+        );
+
+        let value = fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| json!({}));
+
+        Mutex::new(value)
+    })
+}
 
 enum QueueItem {
     Url(String),
@@ -334,7 +354,7 @@ fn get_ytrec_array(recs: Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .unwrap();
     let mut arr = Vec::new();
-    for i in cont.iter().skip(1).take(10) {
+    for i in cont.iter().skip(1) {
         let id = i
             .get("playlistPanelVideoRenderer")
             .and_then(|v| v.get("videoId"))
@@ -488,6 +508,10 @@ fn spawn_input_thread(tx: Sender<String>) {
                     stdin().read_line(&mut index).expect("");
                     tx.send(index.trim().to_string()).unwrap();
                 }
+                if cmd == "h" {
+                    SHUTDOWN.store(true, Ordering::SeqCst);
+                    break;
+                }
                 // if tx.send(cmd.clone()).is_err() {
                 //     break;
                 // }
@@ -499,27 +523,40 @@ fn spawn_input_thread(tx: Sender<String>) {
 fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
-
+        let mut json = global_json().lock().unwrap();
         rt.block_on(async move {
             let new_iid = convert_to_ytm(&name).await.unwrap();
 
             let njson = get_ytrecs(&new_iid).await;
             let arr = get_ytrec_array(njson);
 
-            for item in arr.iter().take(10) {
+            for item in arr.iter() {
+                if SHUTDOWN.load(Ordering::SeqCst) {
+                    break;
+                }
                 let _name = item.get("name").and_then(Value::as_str).unwrap();
                 let id = item.get("id").and_then(Value::as_str).unwrap();
-
-                let songlink_data = get_songlink_data(id, "y").await;
-                let tidal_id = extract_tidal_id(&songlink_data);
-
-                if let Some(tid) = tidal_id {
-                    let quality = get_quality(&tid).await;
+                let tidal_id = json.get(id).and_then(Value::as_str);
+                let tidal_id_final: String;
+                if tidal_id.is_none() {
+                    let songlink_data = get_songlink_data(id, "y").await;
+                    let iiiid = extract_tidal_id(&songlink_data);
+                    if iiiid.is_none() {
+                        continue;
+                    } else {
+                        tidal_id_final = iiiid.unwrap();
+                        json[id] = Value::String(tidal_id_final.clone());
+                    }
+                } else {
+                    tidal_id_final = tidal_id.unwrap().to_string();
+                }
+                if !tidal_id_final.is_empty() {
+                    let quality = get_quality(&tidal_id_final).await;
                     if quality.is_empty() {
                         // eprintln!("Skipping {name} ({id})");
                         continue;
                     }
-                    let id: i32 = tid.parse().unwrap();
+                    let id: i32 = tidal_id_final.parse().unwrap();
                     if let Ok(res) = get_song(id, &quality).await {
                         let manifest = res
                             .get("data")
@@ -550,6 +587,18 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
     });
 }
 
+fn save_cache() {
+    let path = format!(
+        "{}/.local/share/mscply/cache.json",
+        env::var("HOME").unwrap()
+    );
+
+    fs::create_dir_all(path.rsplit_once('/').unwrap().0).unwrap();
+
+    let json = global_json().lock().unwrap();
+    fs::write(path, serde_json::to_string_pretty(&*json).unwrap()).unwrap();
+}
+
 #[tokio::main]
 async fn main() {
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
@@ -566,8 +615,11 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
-    spawn_input_thread(input_tx);
+    spawn_input_thread(input_tx.clone());
     loop {
+        if SHUTDOWN.load(Ordering::SeqCst) {
+            break;
+        }
         while let Ok(item) = rx.try_recv() {
             match item {
                 QueueItem::Url(url) => {
@@ -648,4 +700,7 @@ async fn main() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    drop(tx);
+    drop(input_tx);
+    save_cache();
 }
