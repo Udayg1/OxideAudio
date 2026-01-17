@@ -4,12 +4,11 @@ use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json;
 use serde_json::{Value, json};
-use std::io::{self, Write, stdin, stdout};
+use std::io::{self, Write, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
 use std::{env, fs};
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
@@ -489,32 +488,15 @@ fn spawn_input_thread(tx: Sender<String>) {
     std::thread::spawn(move || {
         let mut buf = String::new();
         loop {
-            print!(
-                "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
-            );
             stdout().flush().unwrap();
             buf.clear();
             if io::stdin().read_line(&mut buf).is_ok() {
                 let cmd = buf.trim().to_string();
                 tx.send(cmd.clone().trim().to_string()).unwrap();
-                if cmd == "a" {
-                    let mut name = String::new();
-                    stdin().read_line(&mut name).expect("");
-                    tx.send(name.trim().to_string().clone()).unwrap();
-                    if name.trim().eq_ignore_ascii_case("q") {
-                        continue;
-                    }
-                    let mut index = String::new();
-                    stdin().read_line(&mut index).expect("");
-                    tx.send(index.trim().to_string()).unwrap();
-                }
                 if cmd == "h" {
                     SHUTDOWN.store(true, Ordering::SeqCst);
                     break;
                 }
-                // if tx.send(cmd.clone()).is_err() {
-                //     break;
-                // }
             }
         }
     });
@@ -630,7 +612,12 @@ async fn main() {
                 }
             }
         }
-        if let Ok(name) = input_rx.try_recv() {
+        print!(
+            "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
+        );
+        stdout().flush().unwrap();
+        if let Ok(name) = input_rx.recv() {
+            if name.is_empty(){continue;}
             if name.eq_ignore_ascii_case("h") {
                 break;
             } else if name.eq_ignore_ascii_case("p") {
@@ -698,7 +685,7 @@ async fn main() {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(50));
+        // std::thread::sleep(Duration::from_millis(50));
     }
     drop(tx);
     drop(input_tx);
