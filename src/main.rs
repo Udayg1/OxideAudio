@@ -10,11 +10,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::{env, fs};
+use tokio::time;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
-const QUERYBASE: &str = "https://triton.squid.wtf/search/?s=";
+const QUERYBASE: &str = "https://tidal-api.binimum.org/search/?s=";
 const STREAM: &str = "https://triton.squid.wtf/track/?";
+const INFOSTREAM: &str = "tidal-api.binimum.org";
 static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 
 fn global_json() -> &'static Mutex<Value> {
@@ -97,25 +99,16 @@ fn queue_mpd_song(mpv: &mut Mpv, mpd: &str, init: i32) {
 
 fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
     let idle: bool = mpv.get_property("idle-active").unwrap();
-
-    // If mpv is idle, just start playing
     if idle {
         mpv.command("loadfile", &[url, "replace"]).unwrap();
         return;
     }
-
-    // Get current playlist position
     let cur: i64 = mpv.get_property("playlist-pos").unwrap();
-
-    // init == 1 → play next
-    // init == 0 → append after the current insertion block
     let insert_pos = if init == 1 {
         cur + 1
     } else {
-        // insert after the last queued item
         mpv.get_property::<i64>("playlist-count").unwrap()
     };
-
     mpv.command("loadfile", &[url, "insert-at", &insert_pos.to_string()])
         .unwrap();
 }
@@ -400,7 +393,7 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
 async fn get_quality(id: &str) -> String {
     let cli = Client::new();
     let res = cli
-        .get(format!("https://hund.qqdl.site/info/?id={}", id.trim()))
+        .get(format!("https://{}/info/?id={}", INFOSTREAM, id.trim()))
         .header(USER_AGENT, AGENT)
         .header(REFERER, "https://tidal.squid.wtf/")
         .send()
@@ -409,7 +402,6 @@ async fn get_quality(id: &str) -> String {
         .json::<Value>()
         .await
         .unwrap();
-    // println!("{res} --- {id}");
     let qual = res
         .get("data")
         .and_then(|v| v.get("audioQuality"))
@@ -488,7 +480,9 @@ fn spawn_input_thread(tx: Sender<String>) {
     std::thread::spawn(move || {
         let mut buf = String::new();
         loop {
-            stdout().flush().unwrap();
+            if SHUTDOWN.load(Ordering::SeqCst) {
+                break;
+            }
             buf.clear();
             if io::stdin().read_line(&mut buf).is_ok() {
                 let cmd = buf.trim().to_string();
@@ -505,22 +499,31 @@ fn spawn_input_thread(tx: Sender<String>) {
 fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let mut json = global_json().lock().unwrap();
         rt.block_on(async move {
+            let mut json = global_json().lock().unwrap();
             let new_iid = convert_to_ytm(&name).await.unwrap();
 
             let njson = get_ytrecs(&new_iid).await;
             let arr = get_ytrec_array(njson);
-
+            let mut count = 0;
             for item in arr.iter() {
+                if count > 10 {
+                    count = 0;
+                    save_cache();
+                } else {
+                    count += 1;
+                }
                 if SHUTDOWN.load(Ordering::SeqCst) {
-                    break;
+                    return;
                 }
                 let _name = item.get("name").and_then(Value::as_str).unwrap();
                 let id = item.get("id").and_then(Value::as_str).unwrap();
                 let tidal_id = json.get(id).and_then(Value::as_str);
                 let tidal_id_final: String;
                 if tidal_id.is_none() {
+                    if SHUTDOWN.load(Ordering::SeqCst) {
+                        return;
+                    }
                     let songlink_data = get_songlink_data(id, "y").await;
                     let iiiid = extract_tidal_id(&songlink_data);
                     if iiiid.is_none() {
@@ -533,38 +536,41 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     tidal_id_final = tidal_id.unwrap().to_string();
                 }
                 if !tidal_id_final.is_empty() {
+                    if SHUTDOWN.load(Ordering::SeqCst) {
+                        return;
+                    }
                     let quality = get_quality(&tidal_id_final).await;
                     if quality.is_empty() {
-                        // eprintln!("Skipping {name} ({id})");
                         continue;
                     }
                     let id: i32 = tidal_id_final.parse().unwrap();
+                    if SHUTDOWN.load(Ordering::SeqCst) {
+                        return;
+                    }
                     if let Ok(res) = get_song(id, &quality).await {
                         let manifest = res
                             .get("data")
                             .and_then(|d| d.get("manifest"))
-                            .and_then(Value::as_str)
-                            .unwrap();
-
-                        let decoded = decode_base64(manifest);
-                        // println!("WORKER: sending item");
-                        if decoded.starts_with("<?xml") {
-                            tx.send(QueueItem::Mpd(decoded)).ok();
-                        } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
-                            if let Some(url) = json
-                                .get("urls")
-                                .and_then(|v| v.as_array())
-                                .and_then(|a| a.first())
-                                .and_then(Value::as_str)
-                            {
-                                tx.send(QueueItem::Url(url.to_string())).ok();
+                            .and_then(Value::as_str);
+                        if !manifest.is_none() {
+                            let decoded = decode_base64(manifest.unwrap());
+                            if decoded.starts_with("<?xml") {
+                                tx.send(QueueItem::Mpd(decoded)).ok();
+                            } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
+                                if let Some(url) = json
+                                    .get("urls")
+                                    .and_then(|v| v.as_array())
+                                    .and_then(|a| a.first())
+                                    .and_then(Value::as_str)
+                                {
+                                    tx.send(QueueItem::Url(url.to_string())).ok();
+                                }
                             }
                         }
                     }
-                } else {
-                    // eprintln!("DEBUG::failed {name} - {id}");
                 }
             }
+            save_cache();
         });
     });
 }
@@ -598,6 +604,10 @@ async fn main() {
     )
     .unwrap();
     spawn_input_thread(input_tx.clone());
+    print!(
+        "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
+    );
+    stdout().flush().unwrap();
     loop {
         if SHUTDOWN.load(Ordering::SeqCst) {
             break;
@@ -612,13 +622,9 @@ async fn main() {
                 }
             }
         }
-        print!(
-            "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
-        );
-        stdout().flush().unwrap();
-        if let Ok(name) = input_rx.recv() {
-            if name.is_empty(){continue;}
+        if let Ok(name) = input_rx.try_recv() {
             if name.eq_ignore_ascii_case("h") {
+                stdout().flush().unwrap();
                 break;
             } else if name.eq_ignore_ascii_case("p") {
                 mpv.set_property("pause", true).unwrap();
@@ -684,8 +690,12 @@ async fn main() {
                     mpv.set_property("volume", val).unwrap();
                 }
             }
+            print!(
+                "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
+            );
+            stdout().flush().unwrap();
         }
-        // std::thread::sleep(Duration::from_millis(50));
+        thread::sleep(time::Duration::from_millis(100));
     }
     drop(tx);
     drop(input_tx);
