@@ -514,6 +514,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     count += 1;
                 }
                 if SHUTDOWN.load(Ordering::SeqCst) {
+                    save_cache();
                     return;
                 }
                 let _name = item.get("name").and_then(Value::as_str).unwrap();
@@ -522,6 +523,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 let tidal_id_final: String;
                 if tidal_id.is_none() {
                     if SHUTDOWN.load(Ordering::SeqCst) {
+                        save_cache();
                         return;
                     }
                     let songlink_data = get_songlink_data(id, "y").await;
@@ -537,6 +539,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 }
                 if !tidal_id_final.is_empty() {
                     if SHUTDOWN.load(Ordering::SeqCst) {
+                        save_cache();
                         return;
                     }
                     let quality = get_quality(&tidal_id_final).await;
@@ -545,6 +548,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     }
                     let id: i32 = tidal_id_final.parse().unwrap();
                     if SHUTDOWN.load(Ordering::SeqCst) {
+                        save_cache();
                         return;
                     }
                     if let Ok(res) = get_song(id, &quality).await {
@@ -699,5 +703,4 @@ async fn main() {
     }
     drop(tx);
     drop(input_tx);
-    save_cache();
 }
