@@ -677,6 +677,19 @@ fn check_song(id: &str) -> bool {
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = env::args().collect(); 
+    if args.len() > 1{
+        let path = format!("{}/.local/share/mscply/songs/", env::var("HOME").unwrap());
+        for i in &args[1..]{
+            if i == "-c"{
+                match fs::remove_dir_all(&path){
+                    Ok(_v) => {println!("Removed cache files");}
+                    Err(e) => {eprintln!("Error removing direcotry:  {}, {}", path, e);}
+                }
+                return;
+            }
+        }
+    }
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
     let (input_tx, input_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let mut mpv = match Mpv::new() {
