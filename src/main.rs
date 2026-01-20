@@ -5,6 +5,7 @@ use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json;
 use serde_json::{Value, json};
 use std::io::{self, Write, stdout};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
@@ -542,6 +543,16 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                         save_cache();
                         return;
                     }
+                    let cached = check_song(&tidal_id_final);
+                    if cached {
+                        tx.send(QueueItem::Url(format!(
+                            "{}/.local/share/mscply/songs/{}",
+                            env::var("HOME").unwrap(),
+                            tidal_id_final
+                        )))
+                        .ok();
+                        continue;
+                    }
                     let quality = get_quality(&tidal_id_final).await;
                     if quality.is_empty() {
                         continue;
@@ -559,7 +570,13 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                         if !manifest.is_none() {
                             let decoded = decode_base64(manifest.unwrap());
                             if decoded.starts_with("<?xml") {
-                                tx.send(QueueItem::Mpd(decoded)).ok();
+                                cache_mpd_song(&decoded, &tidal_id_final);
+                                tx.send(QueueItem::Mpd(format!(
+                                    "{}/.local/share/mscply/songs/{}",
+                                    env::var("HOME").unwrap(),
+                                    tidal_id_final
+                                )))
+                                .ok();
                             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                                 if let Some(url) = json
                                     .get("urls")
@@ -567,7 +584,13 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     .and_then(|a| a.first())
                                     .and_then(Value::as_str)
                                 {
-                                    tx.send(QueueItem::Url(url.to_string())).ok();
+                                    cache_url(&tidal_id_final, url).await;
+                                    tx.send(QueueItem::Url(format!(
+                                        "{}/.local/share/mscply/songs/{}",
+                                        env::var("HOME").unwrap(),
+                                        tidal_id_final
+                                    )))
+                                    .ok();
                                 }
                             }
                         }
@@ -577,6 +600,60 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
             save_cache();
         });
     });
+}
+
+async fn cache_url(id: &str, url: &str) -> Option<String> {
+    let path = format!(
+        "{}/.local/share/mscply/songs/{}",
+        env::var("HOME").unwrap(),
+        id
+    );
+    if fs::metadata(&path).is_ok() {
+        return Some(path);
+    }
+
+    let bytes = Client::new()
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .bytes()
+        .await
+        .ok()?;
+
+    fs::write(&path, bytes).ok()?;
+    Some(path)
+}
+
+fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
+    let mut ffmpeg = Command::new("ffmpeg")
+        .args([
+            "-protocol_whitelist",
+            "file,pipe,https,tls,tcp,crypto",
+            "-i",
+            "pipe:0",
+            "-f",
+            "flac",
+            "-v",
+            "quiet",
+            "-c",
+            "copy",
+            &format!(
+                "{}/.local/share/mscply/songs/{}",
+                env::var("HOME").unwrap(),
+                tidal_id
+            ),
+        ])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    ffmpeg
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(mpd_string.as_bytes())
+        .unwrap();
 }
 
 fn save_cache() {
@@ -589,6 +666,13 @@ fn save_cache() {
 
     let json = global_json().lock().unwrap();
     fs::write(path, serde_json::to_string_pretty(&*json).unwrap()).unwrap();
+}
+
+fn check_song(id: &str) -> bool {
+    let path = format!("{}/.local/share/mscply/songs/", env::var("HOME").unwrap());
+    fs::create_dir_all(&path).unwrap();
+    let f = fs::File::open(format!("{}/{}", path, id));
+    if f.is_err() { false } else { true }
 }
 
 #[tokio::main]
