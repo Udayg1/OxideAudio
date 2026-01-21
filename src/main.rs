@@ -1,15 +1,36 @@
 use base64::{Engine as _, engine::general_purpose};
-use libmpv2::Mpv;
+use crossterm::{
+    event::{Event, KeyCode},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use libmpv2::{self, Mpv};
+use libmpv2::{
+    Format,
+    events::{Event as eve, PropertyData},
+};
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    widgets::{Block, Borders, Paragraph},
+};
+use ratatui::{
+    layout::{Alignment, Rect},
+    widgets::{Clear, List, ListItem},
+};
 use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json;
 use serde_json::{Value, json};
-use std::io::{self, Write, stdout};
+use std::io::Stdout;
+use std::io::{Write, stdout};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
+use std::time::{Duration, Instant};
 use std::{env, fs};
 use tokio::time;
 
@@ -37,8 +58,8 @@ fn global_json() -> &'static Mutex<Value> {
 }
 
 enum QueueItem {
-    Url(String),
-    Mpd(String),
+    Url(Vec<String>),
+    Mpd(Vec<String>),
 }
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
@@ -86,7 +107,11 @@ fn decode_base64(encoded: &str) -> String {
 fn queue_mpd_song(mpv: &mut Mpv, mpd: &str, init: i32) {
     use std::fs::OpenOptions;
     use std::io::Write;
-    let path = format!("{}/mpd_file.mpd", env::temp_dir().display());
+    let path = format!(
+        "{}/mpd_{}.mpd",
+        env::temp_dir().display(),
+        uuid::Uuid::new_v4()
+    );
     let mut f = OpenOptions::new()
         .write(true)
         .create(true)
@@ -426,6 +451,7 @@ async fn get_quality(id: &str) -> String {
 
 async fn add_song(
     mpv: &mut Mpv,
+    names: &mut Vec<String>,
     items: &Vec<Value>,
     index: String,
     name: String,
@@ -452,49 +478,56 @@ async fn add_song(
         if tags.iter().any(|v| v.as_str() == Some(qual)) {
             audio_quality = "HI_RES_LOSSLESS";
         }
-        let song = get_song(id, audio_quality).await.unwrap();
-        let manifest = song
-            .get("data")
-            .and_then(|v| v.get("manifest"))
-            .and_then(Value::as_str);
-        let decoded = decode_base64(manifest.unwrap());
-        if decoded.starts_with("<?xml") {
-            queue_mpd_song(mpv, &decoded, 1);
+        let cached = check_song(&format!("{}", id));
+        if cached {
+            queue_song(
+                mpv,
+                &format!(
+                    "{}/.local/share/mscply/songs/{}",
+                    env::var("HOME").unwrap(),
+                    id
+                ),
+                1,
+            );
+            names.push(
+                track
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Unknown")
+                    .to_string(),
+            )
         } else {
-            if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
-                if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
-                    if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                        queue_song(mpv, first_url, 1);
+            let song = get_song(id, audio_quality).await.unwrap();
+            let manifest = song
+                .get("data")
+                .and_then(|v| v.get("manifest"))
+                .and_then(Value::as_str);
+            let decoded = decode_base64(manifest.unwrap());
+            if decoded.starts_with("<?xml") {
+                queue_mpd_song(mpv, &decoded, 1);
+            } else {
+                if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
+                    if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
+                        if let Some(first_url) = urls.first().and_then(Value::as_str) {
+                            queue_song(mpv, first_url, 1);
+                        } else {
+                            println!("'urls' array is empty or first element is not a string");
+                        }
                     } else {
-                        println!("'urls' array is empty or first element is not a string");
+                        println!("No 'urls' array found");
                     }
-                } else {
-                    println!("No 'urls' array found");
                 }
             }
+            names.push(
+                track
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Unknown")
+                    .to_string(),
+            );
         }
     }
     spawn_recommendation_worker(name, tx.clone());
-}
-
-fn spawn_input_thread(tx: Sender<String>) {
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        loop {
-            if SHUTDOWN.load(Ordering::SeqCst) {
-                break;
-            }
-            buf.clear();
-            if io::stdin().read_line(&mut buf).is_ok() {
-                let cmd = buf.trim().to_string();
-                tx.send(cmd.clone().trim().to_string()).unwrap();
-                if cmd == "h" {
-                    SHUTDOWN.store(true, Ordering::SeqCst);
-                    break;
-                }
-            }
-        }
-    });
 }
 
 fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
@@ -518,7 +551,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     save_cache();
                     return;
                 }
-                let _name = item.get("name").and_then(Value::as_str).unwrap();
+                let name = item.get("name").and_then(Value::as_str).unwrap();
                 let id = item.get("id").and_then(Value::as_str).unwrap();
                 let tidal_id = json.get(id).and_then(Value::as_str);
                 let tidal_id_final: String;
@@ -545,11 +578,14 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     }
                     let cached = check_song(&tidal_id_final);
                     if cached {
-                        tx.send(QueueItem::Url(format!(
-                            "{}/.local/share/mscply/songs/{}",
-                            env::var("HOME").unwrap(),
-                            tidal_id_final
-                        )))
+                        tx.send(QueueItem::Url(Vec::from([
+                            format!(
+                                "{}/.local/share/mscply/songs/{}",
+                                env::var("HOME").unwrap(),
+                                tidal_id_final
+                            ),
+                            name.to_string(),
+                        ])))
                         .ok();
                         continue;
                     }
@@ -571,11 +607,14 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                             let decoded = decode_base64(manifest.unwrap());
                             if decoded.starts_with("<?xml") {
                                 cache_mpd_song(&decoded, &tidal_id_final);
-                                tx.send(QueueItem::Mpd(format!(
-                                    "{}/.local/share/mscply/songs/{}",
-                                    env::var("HOME").unwrap(),
-                                    tidal_id_final
-                                )))
+                                tx.send(QueueItem::Mpd(Vec::from([
+                                    format!(
+                                        "{}/.local/share/mscply/songs/{}",
+                                        env::var("HOME").unwrap(),
+                                        tidal_id_final
+                                    ),
+                                    name.to_string(),
+                                ])))
                                 .ok();
                             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                                 if let Some(url) = json
@@ -585,11 +624,14 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     .and_then(Value::as_str)
                                 {
                                     cache_url(&tidal_id_final, url).await;
-                                    tx.send(QueueItem::Url(format!(
-                                        "{}/.local/share/mscply/songs/{}",
-                                        env::var("HOME").unwrap(),
-                                        tidal_id_final
-                                    )))
+                                    tx.send(QueueItem::Url(Vec::from([
+                                        format!(
+                                            "{}/.local/share/mscply/songs/{}",
+                                            env::var("HOME").unwrap(),
+                                            tidal_id_final
+                                        ),
+                                        name.to_string(),
+                                    ])))
                                     .ok();
                                 }
                             }
@@ -675,23 +717,144 @@ fn check_song(id: &str) -> bool {
     if f.is_err() { false } else { true }
 }
 
+enum UiMode {
+    Normal,
+    Search,
+    Results,
+}
+
+struct App {
+    status: String,
+    search_query: String,
+    search_results: Vec<Value>,
+    selected: usize,
+    queue_len: i64,
+    paused: bool,
+    mode: UiMode,
+    dirty: bool,
+}
+
+fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
+    enable_raw_mode().unwrap();
+    let mut stdout = stdout();
+    execute!(stdout, EnterAlternateScreen).unwrap();
+    Terminal::new(CrosstermBackend::new(stdout)).unwrap()
+}
+
+fn restore_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) {
+    disable_raw_mode().unwrap();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).unwrap();
+    terminal.show_cursor().unwrap();
+}
+
+fn draw_ui(f: &mut ratatui::Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(3),
+        ])
+        .split(f.area());
+
+    let header = Paragraph::new("mscply — Tidal / YTM player")
+        .block(Block::default().borders(Borders::ALL).title(""));
+
+    let body = Paragraph::new(format!(
+        "Status: {}\nPaused: {}\nQueue: {}",
+        app.status, app.paused, app.queue_len
+    ))
+    .block(Block::default().borders(Borders::ALL).title("Player"));
+
+    let footer = Paragraph::new(match app.mode {
+        UiMode::Normal => "[a] Add  [p] Pause  [r] Resume  [s] Skip  [h] Quit",
+        UiMode::Search => "Type search, Enter = search, Esc = cancel",
+        UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",
+    })
+    .block(Block::default().borders(Borders::ALL).title("Controls"));
+
+    f.render_widget(header, chunks[0]);
+    f.render_widget(body, chunks[1]);
+    f.render_widget(footer, chunks[2]);
+    if matches!(app.mode, UiMode::Search | UiMode::Results) {
+        let area = centered_rect(60, 60, f.area());
+        f.render_widget(Clear, area);
+
+        match app.mode {
+            UiMode::Search => {
+                let input = Paragraph::new(app.search_query.as_str())
+                    .alignment(Alignment::Left)
+                    .block(Block::default().borders(Borders::ALL).title("Search"));
+                f.render_widget(input, area);
+            }
+            UiMode::Results => {
+                let items: Vec<ListItem> = app
+                    .search_results
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let title = t.get("title").and_then(Value::as_str).unwrap_or("Unknown");
+                        let artist = t
+                            .get("artist")
+                            .and_then(|a| a.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("Unknown");
+
+                        let prefix = if i == app.selected { "▶ " } else { "  " };
+                        ListItem::new(format!("{prefix}{title} — {artist}"))
+                    })
+                    .collect();
+
+                let list =
+                    List::new(items).block(Block::default().borders(Borders::ALL).title("Results"));
+
+                f.render_widget(list, area);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect(); 
-    if args.len() > 1{
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
         let path = format!("{}/.local/share/mscply/songs/", env::var("HOME").unwrap());
-        for i in &args[1..]{
-            if i == "-c"{
-                match fs::remove_dir_all(&path){
-                    Ok(_v) => {println!("Removed cache files");}
-                    Err(e) => {eprintln!("Error removing direcotry:  {}, {}", path, e);}
+        for i in &args[1..] {
+            if i == "-c" {
+                match fs::remove_dir_all(&path) {
+                    Ok(_v) => {
+                        println!("Removed cache files");
+                    }
+                    Err(e) => {
+                        eprintln!("Error removing direcotry:  {}, {}", path, e);
+                    }
                 }
                 return;
             }
         }
     }
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
-    let (input_tx, input_rx): (Sender<String>, Receiver<String>) = mpsc::channel();
     let mut mpv = match Mpv::new() {
         Ok(player) => player,
         Err(e) => {
@@ -704,100 +867,177 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
-    spawn_input_thread(input_tx.clone());
-    print!(
-        "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
-    );
-    stdout().flush().unwrap();
+
+    let mut terminal = setup_terminal();
+    mpv.set_property("log-file", "./mpv.log").unwrap();
+    let mut names: Vec<String> = Vec::new();
+    let mut app = App {
+        status: "Nothing is playing".into(),
+        search_query: String::new(),
+        search_results: Vec::new(),
+        selected: 0,
+        queue_len: 0,
+        paused: false,
+        mode: UiMode::Normal,
+        dirty: true,
+    };
+    mpv.observe_property("playlist-pos", Format::Int64, 1)
+        .unwrap();
+    let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
     loop {
-        if SHUTDOWN.load(Ordering::SeqCst) {
-            break;
+        if let Some(event) = mpv.wait_event(0.0) {
+            match event.unwrap() {
+                eve::PropertyChange {
+                    name: _,
+                    change,
+                    reply_userdata,
+                } => match reply_userdata {
+                    1 => {
+                        if let PropertyData::Int64(pos) = change {
+                            if pos != -1 {
+                                app.status = format!("Playing {}", names.pop().unwrap());
+                                app.dirty = true
+                            }
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        let pos: i64 = mpv.get_property::<i64>("playlist-pos").unwrap();
+        if pos != -1 {
+            if app.queue_len != mpv.get_property::<i64>("playlist-count").unwrap() - pos {
+                app.queue_len = mpv.get_property::<i64>("playlist-count").unwrap() - pos;
+                app.dirty = true
+            }
+        }
+        if app.dirty {
+            terminal.draw(|f| draw_ui(f, &app)).unwrap();
+            app.dirty = false;
         }
         while let Ok(item) = rx.try_recv() {
             match item {
                 QueueItem::Url(url) => {
-                    queue_song(&mut mpv, &url, 1);
+                    queue_song(&mut mpv, &url[0], 1);
+                    names.push(url[1].clone())
                 }
                 QueueItem::Mpd(mpd) => {
-                    queue_mpd_song(&mut mpv, &mpd, 1);
+                    queue_mpd_song(&mut mpv, &mpd[0], 1);
+                    names.push(mpd[1].clone())
                 }
             }
         }
-        if let Ok(name) = input_rx.try_recv() {
-            if name.eq_ignore_ascii_case("h") {
-                stdout().flush().unwrap();
-                break;
-            } else if name.eq_ignore_ascii_case("p") {
-                mpv.set_property("pause", true).unwrap();
-            } else if name.starts_with("f") {
-                if name.len() > 1 {
-                    let val: i64 = match name[1..].parse() {
-                        Ok(v) => v,
-                        Err(_e) => {
-                            continue;
+        if crossterm::event::poll(time::Duration::from_millis(100)).unwrap() {
+            if let Event::Key(key) = crossterm::event::read().unwrap() {
+                match app.mode {
+                    UiMode::Normal => match key.code {
+                        KeyCode::Char('h') => {
+                            app.dirty = true;
+                            SHUTDOWN.store(true, Ordering::SeqCst);
+                            break;
                         }
-                    };
-                    let _ = mpv.command("seek", &[&format!("{}", val), "relative"]);
-                }
-            } else if name.eq_ignore_ascii_case("r") {
-                mpv.set_property("pause", false).unwrap();
-            } else if name.eq_ignore_ascii_case("s") {
-                mpv.command("playlist-next", &["force"]).unwrap();
-            } else if name.eq_ignore_ascii_case("a") {
-                print!("Enter song name (q to exit): ");
-                stdout().flush().unwrap();
-                if let Ok(nammme) = input_rx.recv() {
-                    if !nammme.is_empty() && !nammme.eq_ignore_ascii_case("q") {
-                        let res = search_result(&nammme).await.unwrap();
-                        let data = res
-                            .get("data")
-                            .and_then(|v| v.get("items"))
-                            .and_then(Value::as_array)
-                            .unwrap();
-                        if data.is_empty() {
-                            continue;
+                        KeyCode::Char('p') => {
+                            if !app.paused {
+                                mpv.set_property("pause", true).unwrap();
+                                app.paused = true;
+                                app.dirty = true;
+                            }
                         }
-                        println!("\nResults:");
-                        for (i, track) in data.iter().take(5).enumerate() {
-                            println!(
-                                "{}. {} - {}",
-                                i + 1,
-                                track
-                                    .get("title")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("Unknown"),
-                                track
-                                    .get("artist")
-                                    .and_then(|a| a.get("name"))
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("Unknown")
+                        KeyCode::Char('r') => {
+                            if app.paused {
+                                mpv.set_property("pause", false).unwrap();
+                                app.paused = false;
+                                app.dirty = true;
+                            }
+                        }
+                        KeyCode::Char('s') => {
+                            if last_mode_switch.elapsed() >= Duration::from_secs(1) {
+                                last_mode_switch = Instant::now();
+                                mpv.command("playlist-next", &["force"]).unwrap();
+                            }
+                        }
+                        KeyCode::Char('a') => {
+                            app.dirty = true;
+                            app.search_query.clear();
+                            app.mode = UiMode::Search;
+                        }
+                        _ => {}
+                    },
+
+                    UiMode::Search => match key.code {
+                        KeyCode::Esc => {
+                            app.mode = UiMode::Normal;
+                            app.dirty = true;
+                        }
+                        KeyCode::Enter => {
+                            if app.search_query.is_empty() {
+                                app.mode = UiMode::Normal;
+                                app.dirty = true;
+                                continue;
+                            }
+                            let res = search_result(&app.search_query).await.unwrap();
+                            app.search_results = res
+                                .get("data")
+                                .and_then(|v| v.get("items"))
+                                .and_then(Value::as_array)
+                                .unwrap()
+                                .iter()
+                                .take(10)
+                                .cloned()
+                                .collect();
+                            app.selected = 0;
+                            app.mode = UiMode::Results;
+                            app.dirty = true;
+                        }
+                        KeyCode::Backspace => {
+                            app.dirty = true;
+                            app.search_query.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            app.search_query.push(c);
+                            app.dirty = true;
+                        }
+                        _ => {}
+                    },
+
+                    UiMode::Results => match key.code {
+                        KeyCode::Esc => {
+                            app.mode = UiMode::Normal;
+                            app.dirty = true;
+                        }
+                        KeyCode::Up => {
+                            if app.selected > 0 {
+                                app.selected -= 1;
+                                app.dirty = true;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.selected + 1 < app.search_results.len() {
+                                app.selected += 1;
+                                app.dirty = true;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let index = (app.selected + 1).to_string();
+                            add_song(
+                                &mut mpv,
+                                &mut names,
+                                &app.search_results,
+                                index,
+                                app.search_query.clone(),
+                                tx.clone(),
                             )
+                            .await;
+                            app.dirty = true;
+                            app.mode = UiMode::Normal;
                         }
-                        print!("\nSelect track number: ");
-                        stdout().flush().unwrap();
-                        if let Ok(index) = input_rx.recv() {
-                            add_song(&mut mpv, data, index, nammme, tx.clone()).await;
-                        }
-                    }
-                }
-            } else if name.starts_with("v") {
-                if name.len() > 1 {
-                    let val: i64 = match name[1..].parse() {
-                        Ok(v) => v,
-                        Err(_e) => {
-                            continue;
-                        }
-                    };
-                    mpv.set_property("volume", val).unwrap();
+                        _ => {}
+                    },
                 }
             }
-            print!(
-                "Options: (p)ause, (r)esume, (h)alt, (f#)orward # secs, (s)kip, (v#)olume, (a)dd a song -> "
-            );
-            stdout().flush().unwrap();
         }
-        thread::sleep(time::Duration::from_millis(100));
     }
-    drop(tx);
-    drop(input_tx);
+    restore_terminal(terminal);
 }
