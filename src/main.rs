@@ -869,7 +869,6 @@ async fn main() {
     .unwrap();
 
     let mut terminal = setup_terminal();
-    mpv.set_property("log-file", "./mpv.log").unwrap();
     let mut names: Vec<String> = Vec::new();
     let mut app = App {
         status: "Nothing is playing".into(),
