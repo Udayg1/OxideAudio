@@ -7,8 +7,9 @@ strip = "symbols"
 
 [package]
 name = "mscply"
-version = "0.1.12"
+version = "1.0.1"
 edition = "2024"
+description = "First stable release"
 
 [dependencies]
 reqwest = { version = "0.12", features = ["json"] }

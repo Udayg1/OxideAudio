@@ -37,8 +37,8 @@ use tokio::time;
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 const QUERYBASE: &str = "https://tidal-api.binimum.org/search/?s=";
-const STREAM: &str = "https://triton.squid.wtf/track/?";
-const INFOSTREAM: &str = "tidal-api.binimum.org";
+const STREAM: &str = "https://maus.qqdl.site/track/?";
+const INFOSTREAM: &str = "triton.squid.wtf";
 static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 
 fn global_json() -> &'static Mutex<Value> {
@@ -104,7 +104,7 @@ fn decode_base64(encoded: &str) -> String {
     return String::from_utf8(decoded).unwrap();
 }
 
-fn queue_mpd_song(mpv: &mut Mpv, mpd: &str, init: i32) {
+fn queue_mpd_song(mpv: &mut Mpv, mpd: &str) {
     use std::fs::OpenOptions;
     use std::io::Write;
     let path = format!(
@@ -120,23 +120,11 @@ fn queue_mpd_song(mpv: &mut Mpv, mpd: &str, init: i32) {
         .unwrap();
     writeln!(f, "{}", mpd).unwrap();
     f.flush().unwrap();
-    queue_song(mpv, &path, init);
+    queue_song(mpv, &path);
 }
 
-fn queue_song(mpv: &mut Mpv, url: &str, init: i32) {
-    let idle: bool = mpv.get_property("idle-active").unwrap();
-    if idle {
-        mpv.command("loadfile", &[url, "replace"]).unwrap();
-        return;
-    }
-    let cur: i64 = mpv.get_property("playlist-pos").unwrap();
-    let insert_pos = if init == 1 {
-        cur + 1
-    } else {
-        mpv.get_property::<i64>("playlist-count").unwrap()
-    };
-    mpv.command("loadfile", &[url, "insert-at", &insert_pos.to_string()])
-        .unwrap();
+fn queue_song(mpv: &mut Mpv, url: &str) {
+    mpv.command("loadfile", &[url, "replace"]).unwrap();
 }
 
 async fn get_songlink_data(id: &str, source: &str) -> Value {
@@ -450,8 +438,9 @@ async fn get_quality(id: &str) -> String {
 }
 
 async fn add_song(
-    mpv: &mut Mpv,
     names: &mut Vec<String>,
+    urls: &mut Vec<String>,
+    cur: usize,
     items: &Vec<Value>,
     index: String,
     name: String,
@@ -480,16 +469,16 @@ async fn add_song(
         }
         let cached = check_song(&format!("{}", id));
         if cached {
-            queue_song(
-                mpv,
-                &format!(
+            urls.insert(
+                if cur == 0 { 0 } else { cur + 1 },
+                format!(
                     "{}/.local/share/mscply/songs/{}",
                     env::var("HOME").unwrap(),
                     id
                 ),
-                1,
             );
-            names.push(
+            names.insert(
+                if cur == 0 { 0 } else { cur + 1 },
                 track
                     .get("title")
                     .and_then(Value::as_str)
@@ -503,22 +492,9 @@ async fn add_song(
                 .and_then(|v| v.get("manifest"))
                 .and_then(Value::as_str);
             let decoded = decode_base64(manifest.unwrap());
-            if decoded.starts_with("<?xml") {
-                queue_mpd_song(mpv, &decoded, 1);
-            } else {
-                if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
-                    if let Some(urls) = json.get("urls").and_then(|v| v.as_array()) {
-                        if let Some(first_url) = urls.first().and_then(Value::as_str) {
-                            queue_song(mpv, first_url, 1);
-                        } else {
-                            println!("'urls' array is empty or first element is not a string");
-                        }
-                    } else {
-                        println!("No 'urls' array found");
-                    }
-                }
-            }
-            names.push(
+            urls.insert(if cur == 0 { 0 } else { cur + 1 }, decoded);
+            names.insert(
+                if cur == 0 { 0 } else { cur + 1 },
                 track
                     .get("title")
                     .and_then(Value::as_str)
@@ -835,6 +811,36 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+fn advance_playback(
+    mpv: &mut Mpv,
+    urls: &[String],
+    names: &[String],
+    current: &mut usize,
+    app: &mut App,
+) {
+    if *current + 1 >= urls.len() {
+        app.status = "Nothing is playing".to_string();
+        app.queue_len = 0;
+        app.dirty = true;
+        if !mpv.get_property::<bool>("idle-active").unwrap(){
+            mpv.command("seek", &["100", "absolute-percent"]).unwrap();
+        }
+        return;
+    }
+
+    app.queue_len = (urls.len() - *current - 1) as i64;
+    *current += 1;
+    app.status = format!("Playing {}", names[*current]);
+
+    if urls[*current].starts_with("<?xml") {
+        queue_mpd_song(mpv, &urls[*current]);
+    } else {
+        queue_song(mpv, &urls[*current]);
+    }
+
+    app.dirty = true;
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
@@ -867,9 +873,10 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
-
     let mut terminal = setup_terminal();
     let mut names: Vec<String> = Vec::new();
+    let mut urls: Vec<String> = Vec::new();
+    let mut current = 0;
     let mut app = App {
         status: "Nothing is playing".into(),
         search_query: String::new(),
@@ -880,37 +887,41 @@ async fn main() {
         mode: UiMode::Normal,
         dirty: true,
     };
-    mpv.observe_property("playlist-pos", Format::Int64, 1)
+    mpv.observe_property("idle-active", Format::Flag, 2)
         .unwrap();
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
+    let skip_every = Duration::from_millis(800);
+
+    let mut auto_started = false;
+    let mut skipped = false;
     loop {
-        if let Some(event) = mpv.wait_event(0.0) {
+        if let Some(event) = mpv.wait_event(0.05) {
             match event.unwrap() {
+                eve::EndFile(_) => {
+                    if !skipped {
+                        advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                    }
+                    skipped = false;
+                }
+
                 eve::PropertyChange {
-                    name: _,
+                    reply_userdata: 2,
                     change,
-                    reply_userdata,
-                } => match reply_userdata {
-                    1 => {
-                        if let PropertyData::Int64(pos) = change {
-                            if pos != -1 {
-                                app.status = format!("Playing {}", names.pop().unwrap());
-                                app.dirty = true
-                            }
+                    ..
+                } => {
+                    if let PropertyData::Flag(true) = change {
+                        if !auto_started && current == 0 && !urls.is_empty() {
+                            auto_started = true;
+                            advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
                         }
                     }
-                    _ => {}
-                },
+                }
+
                 _ => {}
             }
         }
-
-        let pos: i64 = mpv.get_property::<i64>("playlist-pos").unwrap();
-        if pos != -1 {
-            if app.queue_len != mpv.get_property::<i64>("playlist-count").unwrap() - pos {
-                app.queue_len = mpv.get_property::<i64>("playlist-count").unwrap() - pos;
-                app.dirty = true
-            }
+        if mpv.get_property::<bool>("idle-active").unwrap() && urls.len() >= current+1{
+            advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
         }
         if app.dirty {
             terminal.draw(|f| draw_ui(f, &app)).unwrap();
@@ -919,17 +930,23 @@ async fn main() {
         while let Ok(item) = rx.try_recv() {
             match item {
                 QueueItem::Url(url) => {
-                    queue_song(&mut mpv, &url[0], 1);
-                    names.push(url[1].clone())
+                    urls.push(url[0].clone());
+                    names.push(url[1].clone());
+                    app.queue_len += 1;
                 }
                 QueueItem::Mpd(mpd) => {
-                    queue_mpd_song(&mut mpv, &mpd[0], 1);
-                    names.push(mpd[1].clone())
+                    urls.push(mpd[0].clone());
+                    names.push(mpd[1].clone());
+                    app.queue_len += 1;
                 }
             }
+            app.dirty = true;
         }
         if crossterm::event::poll(time::Duration::from_millis(100)).unwrap() {
             if let Event::Key(key) = crossterm::event::read().unwrap() {
+                if !key.is_press() {
+                    continue;
+                }
                 match app.mode {
                     UiMode::Normal => match key.code {
                         KeyCode::Char('h') => {
@@ -952,9 +969,10 @@ async fn main() {
                             }
                         }
                         KeyCode::Char('s') => {
-                            if last_mode_switch.elapsed() >= Duration::from_secs(1) {
+                            if last_mode_switch.elapsed() >= skip_every {
+                                skipped = true;
+                                advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
                                 last_mode_switch = Instant::now();
-                                mpv.command("playlist-next", &["force"]).unwrap();
                             }
                         }
                         KeyCode::Char('a') => {
@@ -986,9 +1004,15 @@ async fn main() {
                                 .take(10)
                                 .cloned()
                                 .collect();
-                            app.selected = 0;
-                            app.mode = UiMode::Results;
-                            app.dirty = true;
+                            if app.search_results.is_empty() {
+                                app.mode = UiMode::Normal;
+                                app.dirty = true;
+                                continue;
+                            } else {
+                                app.selected = 0;
+                                app.mode = UiMode::Results;
+                                app.dirty = true;
+                            }
                         }
                         KeyCode::Backspace => {
                             app.dirty = true;
@@ -1021,15 +1045,25 @@ async fn main() {
                         KeyCode::Enter => {
                             let index = (app.selected + 1).to_string();
                             add_song(
-                                &mut mpv,
                                 &mut names,
+                                &mut urls,
+                                current,
                                 &app.search_results,
                                 index,
                                 app.search_query.clone(),
                                 tx.clone(),
                             )
                             .await;
+                            app.queue_len += 1;
                             app.dirty = true;
+                            if mpv.get_property::<i64>("playlist-pos").unwrap() == -1 {
+                                app.status = format!("Playing {}", names[current]);
+                                if urls[current].starts_with("<?xml") {
+                                    queue_mpd_song(&mut mpv, &urls[current]);
+                                } else {
+                                    queue_song(&mut mpv, &urls[current]);
+                                }
+                            }
                             app.mode = UiMode::Normal;
                         }
                         _ => {}
