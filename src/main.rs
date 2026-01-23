@@ -23,7 +23,7 @@ use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json;
 use serde_json::{Value, json};
-use std::io::Stdout;
+use std::io::{Stdout, stderr};
 use std::io::{Write, stdout};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,7 +64,10 @@ enum QueueItem {
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
     let fin_url = format!("{}id={}&quality={}", STREAM, id, audio_quality);
-    let client = reqwest::Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .build()
+        .unwrap();
     let body: Value = client
         .get(fin_url)
         .header(USER_AGENT, AGENT)
@@ -78,7 +81,10 @@ async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error>
 async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let s: Vec<&str> = query.split(' ').collect();
     let q = format!("{}{}", QUERYBASE, s.join("%20"));
-    let client = reqwest::Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .build()
+        .unwrap();
     let body: Value = client
         .get(q)
         .header(USER_AGENT, AGENT)
@@ -129,7 +135,10 @@ fn queue_song(mpv: &mut Mpv, url: &str) {
 
 async fn get_songlink_data(id: &str, source: &str) -> Value {
     let url = format!("https://song.link/{}/{}", source, id);
-    let client = reqwest::Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(10)) // 5-second timeout for all requests
+        .build()
+        .unwrap();
     let response = client
         .get(&url)
         .header(USER_AGENT, AGENT)
@@ -144,7 +153,10 @@ async fn get_songlink_data(id: &str, source: &str) -> Value {
 }
 
 async fn convert_to_ytm(name: &str) -> Option<String> {
-    let client = reqwest::Client::new();
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .build()
+        .unwrap();
 
     let body = json!({
         "context": {
@@ -270,7 +282,7 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
 
 async fn get_ytrecs(ytid: &str) -> Value {
     let client = Client::builder()
-        .user_agent("Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0")
+        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
         .unwrap();
     let body = json!({
@@ -405,7 +417,10 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
 }
 
 async fn get_quality(id: &str) -> String {
-    let cli = Client::new();
+    let cli = Client::builder()
+        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .build()
+        .unwrap();
     let res = cli
         .get(format!("https://{}/info/?id={}", INFOSTREAM, id.trim()))
         .header(USER_AGENT, AGENT)
@@ -443,7 +458,7 @@ async fn add_song(
     cur: usize,
     items: &Vec<Value>,
     index: String,
-    name: String,
+    _name: String,
     tx: Sender<QueueItem>,
 ) {
     let choice: usize = index.trim().parse().unwrap_or(0);
@@ -503,7 +518,22 @@ async fn add_song(
             );
         }
     }
-    spawn_recommendation_worker(name, tx.clone());
+    eprintln!(
+        "recommendation tread triggered:: {}\n",
+        &items[choice - 1]
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown")
+            .to_string(),
+    );
+    spawn_recommendation_worker(
+        items[choice - 1]
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown")
+            .to_string(),
+        tx,
+    );
 }
 
 fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
@@ -511,20 +541,27 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
             let mut json = global_json().lock().unwrap();
+            eprintln!("lock acquired:: {}", name);
+            eprintln!("recommendation worker:: new id request send");
             let new_iid = convert_to_ytm(&name).await.unwrap();
-
+            eprintln!(
+                "recommendation worker:: id received {},  request send to get recs",
+                new_iid
+            );
             let njson = get_ytrecs(&new_iid).await;
+            eprintln!("recommendation worker:: recommendations received");
             let arr = get_ytrec_array(njson);
-            let mut count = 0;
-            for item in arr.iter() {
-                if count > 10 {
-                    count = 0;
-                    save_cache();
-                } else {
-                    count += 1;
-                }
+            eprintln!(
+                "recommendation worker:: found {} result for {}",
+                arr.len(),
+                name
+            );
+            stderr().flush().unwrap();
+            // let mut count = 0;
+            for (i, item) in arr.iter().enumerate() {
+                eprintln!("recommendation worker::loop({}), for {}", i, name);
                 if SHUTDOWN.load(Ordering::SeqCst) {
-                    save_cache();
+                    save_cache(&json);
                     return;
                 }
                 let name = item.get("name").and_then(Value::as_str).unwrap();
@@ -533,10 +570,11 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 let tidal_id_final: String;
                 if tidal_id.is_none() {
                     if SHUTDOWN.load(Ordering::SeqCst) {
-                        save_cache();
+                        save_cache(&json);
                         return;
                     }
                     let songlink_data = get_songlink_data(id, "y").await;
+                    // if songlink_data.is_null()
                     let iiiid = extract_tidal_id(&songlink_data);
                     if iiiid.is_none() {
                         continue;
@@ -549,7 +587,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 }
                 if !tidal_id_final.is_empty() {
                     if SHUTDOWN.load(Ordering::SeqCst) {
-                        save_cache();
+                        save_cache(&json);
                         return;
                     }
                     let cached = check_song(&tidal_id_final);
@@ -571,7 +609,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     }
                     let id: i32 = tidal_id_final.parse().unwrap();
                     if SHUTDOWN.load(Ordering::SeqCst) {
-                        save_cache();
+                        save_cache(&json);
                         return;
                     }
                     if let Ok(res) = get_song(id, &quality).await {
@@ -615,7 +653,8 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     }
                 }
             }
-            save_cache();
+            eprintln!("recommendation worker:: cache saved");
+            save_cache(&json);
         });
     });
 }
@@ -674,18 +713,18 @@ fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
         .unwrap();
 }
 
-fn save_cache() {
+fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
     let path = format!(
         "{}/.local/share/mscply/cache.json",
         env::var("HOME").unwrap()
     );
 
+    // Ensure parent directory exists
     fs::create_dir_all(path.rsplit_once('/').unwrap().0).unwrap();
 
-    let json = global_json().lock().unwrap();
-    fs::write(path, serde_json::to_string_pretty(&*json).unwrap()).unwrap();
+    // Serialize and write the JSON
+    fs::write(path, serde_json::to_string_pretty(&**json).unwrap()).unwrap();
 }
-
 fn check_song(id: &str) -> bool {
     let path = format!("{}/.local/share/mscply/songs/", env::var("HOME").unwrap());
     fs::create_dir_all(&path).unwrap();
@@ -822,7 +861,7 @@ fn advance_playback(
         app.status = "Nothing is playing".to_string();
         app.queue_len = 0;
         app.dirty = true;
-        if !mpv.get_property::<bool>("idle-active").unwrap(){
+        if !mpv.get_property::<bool>("idle-active").unwrap() {
             mpv.command("seek", &["100", "absolute-percent"]).unwrap();
         }
         return;
@@ -920,7 +959,7 @@ async fn main() {
                 _ => {}
             }
         }
-        if mpv.get_property::<bool>("idle-active").unwrap() && urls.len() >= current+1{
+        if mpv.get_property::<bool>("idle-active").unwrap() && urls.len() >= current + 1 {
             advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
         }
         if app.dirty {
@@ -1057,6 +1096,9 @@ async fn main() {
                             app.queue_len += 1;
                             app.dirty = true;
                             if mpv.get_property::<i64>("playlist-pos").unwrap() == -1 {
+                                if current != 0 {
+                                    current += 1;
+                                }
                                 app.status = format!("Playing {}", names[current]);
                                 if urls[current].starts_with("<?xml") {
                                     queue_mpd_song(&mut mpv, &urls[current]);

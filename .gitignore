@@ -1,3 +1,5 @@
 /target
 mscdl.py
 t.txt
+.log.txt
+.gitignore
