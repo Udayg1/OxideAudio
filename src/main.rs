@@ -539,7 +539,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
             let arr = get_ytrec_array(njson);
             stderr().flush().unwrap();
             let mut count = 0;
-            for (i, item) in arr.iter().enumerate() {
+            for item in arr.iter() {
                 if count > 10 {
                     save_cache(&json);
                     count = 0;
@@ -560,7 +560,6 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                         return;
                     }
                     let songlink_data = get_songlink_data(id, "y").await;
-                    // if songlink_data.is_null()
                     let iiiid = extract_tidal_id(&songlink_data);
                     if iiiid.is_none() {
                         continue;
