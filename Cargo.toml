@@ -7,7 +7,7 @@ strip = "symbols"
 
 [package]
 name = "mscply"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2024"
 description = "First stable release"
 
@@ -20,4 +20,4 @@ libmpv2 = "5.0.2"
 regex = "1.12.2"
 ratatui = "0.30.0"
 crossterm = "0.29.0"
-uuid = { version = "1.0", features = ["v4"] } 
+uuid = { version = "1.0", features = ["v4"] }
