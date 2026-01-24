@@ -136,19 +136,21 @@ fn queue_song(mpv: &mut Mpv, url: &str) {
 async fn get_songlink_data(id: &str, source: &str) -> Value {
     let url = format!("https://song.link/{}/{}", source, id);
     let client = Client::builder()
-        .timeout(Duration::from_secs(10)) // 5-second timeout for all requests
+        .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-    let response = client
-        .get(&url)
-        .header(USER_AGENT, AGENT)
-        .send()
-        .await
-        .unwrap();
+    let response = client.get(&url).header(USER_AGENT, AGENT).send().await;
+    // .unwrap();
+    if response.is_err() {
+        return json!({});
+    }
     let re =
         regex::Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
             .unwrap();
-    let json_text = re.captures(&response.text().await.unwrap()).unwrap()[1].to_string();
+    let json_text = re
+        .captures(&response.unwrap().text().await.unwrap())
+        .unwrap()[1]
+        .to_string();
     serde_json::from_str(&json_text).unwrap()
 }
 
@@ -412,7 +414,6 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
             }
         }
     }
-    eprintln!("DEBUG::Tidal extraction failed :::: {json}");
     None
 }
 
@@ -518,14 +519,6 @@ async fn add_song(
             );
         }
     }
-    eprintln!(
-        "recommendation tread triggered:: {}\n",
-        &items[choice - 1]
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_string(),
-    );
     spawn_recommendation_worker(
         items[choice - 1]
             .get("title")
@@ -541,25 +534,18 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
             let mut json = global_json().lock().unwrap();
-            eprintln!("lock acquired:: {}", name);
-            eprintln!("recommendation worker:: new id request send");
             let new_iid = convert_to_ytm(&name).await.unwrap();
-            eprintln!(
-                "recommendation worker:: id received {},  request send to get recs",
-                new_iid
-            );
             let njson = get_ytrecs(&new_iid).await;
-            eprintln!("recommendation worker:: recommendations received");
             let arr = get_ytrec_array(njson);
-            eprintln!(
-                "recommendation worker:: found {} result for {}",
-                arr.len(),
-                name
-            );
             stderr().flush().unwrap();
-            // let mut count = 0;
+            let mut count = 0;
             for (i, item) in arr.iter().enumerate() {
-                eprintln!("recommendation worker::loop({}), for {}", i, name);
+                if count > 10 {
+                    save_cache(&json);
+                    count = 0;
+                } else {
+                    count += 1;
+                }
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     save_cache(&json);
                     return;
@@ -653,7 +639,6 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     }
                 }
             }
-            eprintln!("recommendation worker:: cache saved");
             save_cache(&json);
         });
     });
@@ -937,7 +922,8 @@ async fn main() {
         if let Some(event) = mpv.wait_event(0.05) {
             match event.unwrap() {
                 eve::EndFile(_) => {
-                    if !skipped {
+                    if !skipped && !auto_started {
+                        auto_started = true;
                         advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
                     }
                     skipped = false;
@@ -960,7 +946,11 @@ async fn main() {
             }
         }
         if mpv.get_property::<bool>("idle-active").unwrap() && urls.len() >= current + 1 {
-            advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+            if last_mode_switch.elapsed() >= skip_every {
+                advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                last_mode_switch = Instant::now();
+                auto_started = true;
+            }
         }
         if app.dirty {
             terminal.draw(|f| draw_ui(f, &app)).unwrap();
