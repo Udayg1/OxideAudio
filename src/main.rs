@@ -40,6 +40,7 @@ const QUERYBASE: &str = "https://tidal-api.binimum.org/search/?s=";
 const STREAM: &str = "https://maus.qqdl.site/track/?";
 const INFOSTREAM: &str = "triton.squid.wtf";
 static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
+static SAVE_DATA: OnceLock<bool> = OnceLock::new();
 
 fn global_json() -> &'static Mutex<Value> {
     ID_CACHE.get_or_init(|| {
@@ -203,7 +204,7 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         "inlineSettingStatus": "INLINE_SETTING_STATUS_ON"
     });
     let new: Vec<&str> = name.trim().split(' ').collect();
-    let res = client
+    let mut res = client
         .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
         .header(USER_AGENT, AGENT)
         .header(CONTENT_TYPE, "application/json")
@@ -213,11 +214,25 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         )
         .json(&body)
         .send()
-        .await
-        .unwrap()
-        .json::<Value>()
         .await;
-    let resn = res.unwrap();
+    while res.is_err() {
+        res = client
+            .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
+            .header(USER_AGENT, AGENT)
+            .header(CONTENT_TYPE, "application/json")
+            .header(
+                REFERER,
+                format!("https://music.youtube.com/search?q={}", new.join("+")),
+            )
+            .json(&body)
+            .send()
+            .await;
+    }
+    let ress = res.unwrap().json::<Value>().await;
+    if ress.is_err() {
+        return Some("".to_string());
+    }
+    let resn = ress.unwrap();
     let first: Option<String>;
     let arr = resn
         .get("contents")
@@ -276,13 +291,13 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
             .and_then(Value::as_str)
             .map(|s| s.to_string());
     }
-    if first.is_none() {
-        eprint!("{resn}");
-    }
     first
 }
 
 async fn get_ytrecs(ytid: &str) -> Value {
+    if ytid.is_empty() {
+        return json!({});
+    }
     let client = Client::builder()
         .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
@@ -508,23 +523,50 @@ async fn add_song(
                 .and_then(|v| v.get("manifest"))
                 .and_then(Value::as_str);
             let decoded = decode_base64(manifest.unwrap());
-            urls.insert(if cur == 0 { 0 } else { cur + 1 }, decoded);
-            names.insert(
-                if cur == 0 { 0 } else { cur + 1 },
-                track
-                    .get("title")
+            if decoded.starts_with("<?xml") {
+                urls.insert(if cur == 0 { 0 } else { cur + 1 }, decoded);
+                names.insert(
+                    if cur == 0 { 0 } else { cur + 1 },
+                    track
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Unknown")
+                        .to_string(),
+                );
+            } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
+                if let Some(url) = json
+                    .get("urls")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.first())
                     .and_then(Value::as_str)
-                    .unwrap_or("Unknown")
-                    .to_string(),
-            );
+                {
+                    urls.insert(if cur == 0 { 0 } else { cur + 1 }, url.to_string());
+                    names.insert(
+                        if cur == 0 { 0 } else { cur + 1 },
+                        track
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Unknown")
+                            .to_string(),
+                    );
+                }
+            }
         }
     }
     spawn_recommendation_worker(
-        items[choice - 1]
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_string(),
+        format!(
+            "{} {}",
+            items[choice - 1]
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown")
+                .to_string(),
+            items[choice - 1]
+                .get("artist")
+                .and_then(|v| v.get("name"))
+                .and_then(Value::as_str)
+                .unwrap()
+        ),
         tx,
     );
 }
@@ -605,6 +647,14 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                         if !manifest.is_none() {
                             let decoded = decode_base64(manifest.unwrap());
                             if decoded.starts_with("<?xml") {
+                                if *SAVE_DATA.get().unwrap_or(&true) {
+                                    tx.send(QueueItem::Url(Vec::from([
+                                        decoded.to_string(),
+                                        name.to_string(),
+                                    ])))
+                                    .ok();
+                                    continue;
+                                }
                                 cache_mpd_song(&decoded, &tidal_id_final);
                                 tx.send(QueueItem::Mpd(Vec::from([
                                     format!(
@@ -622,6 +672,14 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     .and_then(|a| a.first())
                                     .and_then(Value::as_str)
                                 {
+                                    if *SAVE_DATA.get().unwrap_or(&true) {
+                                        tx.send(QueueItem::Url(Vec::from([
+                                            url.to_string(),
+                                            name.to_string(),
+                                        ])))
+                                        .ok();
+                                        continue;
+                                    }
                                     cache_url(&tidal_id_final, url).await;
                                     tx.send(QueueItem::Url(Vec::from([
                                         format!(
@@ -800,7 +858,33 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
                             .unwrap_or("Unknown");
 
                         let prefix = if i == app.selected { "▶ " } else { "  " };
-                        ListItem::new(format!("{prefix}{title} — {artist}"))
+                        let time = t.get("duration").and_then(Value::as_i64).unwrap();
+                        let min = time / 60;
+                        let sec = time % 60;
+                        let tags = t
+                            .get("mediaMetadata")
+                            .and_then(|v| v.get("tags"))
+                            .and_then(Value::as_array);
+                        let tag: &Vec<Value>;
+                        let mut qual: String = "".to_string();
+                        if !tags.is_none() {
+                            tag = tags.unwrap();
+                            qual = if !tag.is_empty()
+                                && tag.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS"))
+                            {
+                                "24 bit/192kHz".to_string()
+                            } else {
+                                t.get("audioQuality")
+                                    .and_then(Value::as_str)
+                                    .unwrap()
+                                    .to_string()
+                            }
+                        }
+                        if qual == "LOSSLESS" {
+                            qual = "16 bit/44.1kHz".to_string()
+                        }
+
+                        ListItem::new(format!("{prefix}{title} — {artist} ({min}:{sec}, {qual})"))
                     })
                     .collect();
 
@@ -867,6 +951,7 @@ fn advance_playback(
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
+    let mut save = false;
     if args.len() > 1 {
         let path = format!("{}/.local/share/mscply/songs/", env::var("HOME").unwrap());
         for i in &args[1..] {
@@ -880,9 +965,12 @@ async fn main() {
                     }
                 }
                 return;
+            } else if i == "-s" {
+                save = true;
             }
         }
     }
+    SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
     let mut mpv = match Mpv::new() {
         Ok(player) => player,
@@ -914,11 +1002,12 @@ async fn main() {
         .unwrap();
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
     let skip_every = Duration::from_millis(800);
-
+    // mpv.set_property("log-file", "./mpv.log").unwrap();
     let mut auto_started = false;
     let mut skipped = false;
     loop {
         if let Some(event) = mpv.wait_event(0.05) {
+            // if event.is_err(){continue;}
             match event.unwrap() {
                 eve::EndFile(_) => {
                     if !skipped && !auto_started {
