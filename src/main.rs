@@ -25,7 +25,6 @@ use serde_json;
 use serde_json::{Value, json};
 use std::io::{Stdout, stderr};
 use std::io::{Write, stdout};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
@@ -299,7 +298,7 @@ async fn get_ytrecs(ytid: &str) -> Value {
         return json!({});
     }
     let client = Client::builder()
-        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        // .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
         .unwrap();
     let body = json!({
@@ -655,7 +654,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     .ok();
                                     continue;
                                 }
-                                cache_mpd_song(&decoded, &tidal_id_final);
+                                cache_mpd_song(&decoded, &tidal_id_final).await;
                                 tx.send(QueueItem::Mpd(Vec::from([
                                     format!(
                                         "{}/.local/share/mscply/songs/{}",
@@ -724,35 +723,46 @@ async fn cache_url(id: &str, url: &str) -> Option<String> {
     Some(path)
 }
 
-fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
-    let mut ffmpeg = Command::new("ffmpeg")
-        .args([
-            "-protocol_whitelist",
-            "file,pipe,https,tls,tcp,crypto",
-            "-i",
-            "pipe:0",
-            "-f",
-            "flac",
-            "-v",
-            "quiet",
-            "-c",
-            "copy",
-            &format!(
-                "{}/.local/share/mscply/songs/{}",
-                env::var("HOME").unwrap(),
-                tidal_id
-            ),
-        ])
-        .stdin(Stdio::piped())
-        .spawn()
+async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
+    eprintln!("{mpd_string}");
+    let new: Vec<&str> = mpd_string.split(" ").collect();
+    let mut init: String = "--".to_string();
+    let mut r = "--";
+    for i in new {
+        if i.starts_with("media=") {
+            init = i[7..i.len() - 1].to_string();
+        } else if i.starts_with("r=") {
+            let smth = i.split("/").collect::<Vec<&str>>()[0];
+            r = &smth[3..smth.len() - 1];
+        }
+    }
+    let client = Client::new();
+    init = init.replace("amp;", "");
+    let new_init = init.split("$Number$").collect::<Vec<&str>>();
+    let r = r.parse::<u32>().unwrap();
+    let mut bytes: Vec<u8> = Vec::new();
+    for i in 0..=r + 2 {
+        eprintln!("iter {i}");
+        let resp = client
+            .get(format!("{}{}{}", new_init[0], i, new_init[1]))
+            .send()
+            .await;
+        if resp.is_err() {
+            return;
+        }
+        let chunk = resp.unwrap().bytes().await.unwrap();
+        bytes.extend_from_slice(&chunk);
+    }
+    let mut handle = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(format!(
+            "{}/.local/share/mscply/songs/{}",
+            env::var("HOME").unwrap(),
+            tidal_id
+        ))
         .unwrap();
-
-    ffmpeg
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(mpd_string.as_bytes())
-        .unwrap();
+    handle.write_all(&bytes).unwrap();
 }
 
 fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
