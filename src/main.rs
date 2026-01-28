@@ -40,6 +40,7 @@ const STREAM: &str = "https://maus.qqdl.site/track/?";
 const INFOSTREAM: &str = "triton.squid.wtf";
 static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 static SAVE_DATA: OnceLock<bool> = OnceLock::new();
+static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn global_json() -> &'static Mutex<Value> {
     ID_CACHE.get_or_init(|| {
@@ -575,6 +576,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
             let mut json = global_json().lock().unwrap();
+            IS_RUNNING.store(true, Ordering::SeqCst);
             let new_iid = convert_to_ytm(&name).await.unwrap();
             let njson = get_ytrecs(&new_iid).await;
             let arr = get_ytrec_array(njson);
@@ -696,6 +698,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 }
             }
             save_cache(&json);
+            IS_RUNNING.store(false, Ordering::SeqCst);
         });
     });
 }
@@ -724,7 +727,6 @@ async fn cache_url(id: &str, url: &str) -> Option<String> {
 }
 
 async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
-    eprintln!("{mpd_string}");
     let new: Vec<&str> = mpd_string.split(" ").collect();
     let mut init: String = "--".to_string();
     let mut r = "--";
@@ -742,7 +744,6 @@ async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
     let r = r.parse::<u32>().unwrap();
     let mut bytes: Vec<u8> = Vec::new();
     for i in 0..=r + 2 {
-        eprintln!("iter {i}");
         let resp = client
             .get(format!("{}{}{}", new_init[0], i, new_init[1]))
             .send()
@@ -1016,6 +1017,11 @@ async fn main() {
     let mut auto_started = false;
     let mut skipped = false;
     loop {
+        if !IS_RUNNING.load(Ordering::SeqCst) && current + 1 == names.len() {
+            if names.len() > 1 {
+                spawn_recommendation_worker(names.last().unwrap().to_string(), tx.clone());
+            }
+        }
         if let Some(event) = mpv.wait_event(0.05) {
             // if event.is_err(){continue;}
             match event.unwrap() {
@@ -1057,14 +1063,18 @@ async fn main() {
         while let Ok(item) = rx.try_recv() {
             match item {
                 QueueItem::Url(url) => {
-                    urls.push(url[0].clone());
-                    names.push(url[1].clone());
-                    app.queue_len += 1;
+                    if !names.contains(&url[1]) {
+                        urls.push(url[0].clone());
+                        names.push(url[1].clone());
+                        app.queue_len += 1;
+                    }
                 }
                 QueueItem::Mpd(mpd) => {
-                    urls.push(mpd[0].clone());
-                    names.push(mpd[1].clone());
-                    app.queue_len += 1;
+                    if !names.contains(&mpd[1]) {
+                        urls.push(mpd[0].clone());
+                        names.push(mpd[1].clone());
+                        app.queue_len += 1;
+                    }
                 }
             }
             app.dirty = true;
