@@ -9,6 +9,7 @@ use libmpv2::{
     Format,
     events::{Event as eve, PropertyData},
 };
+use macros::*;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -44,15 +45,12 @@ static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
 fn global_json() -> &'static Mutex<Value> {
     ID_CACHE.get_or_init(|| {
-        let path = format!(
-            "{}/.local/share/mscply/cache.json",
-            env::var("HOME").unwrap()
-        );
+        let path = home_format();
 
         let value = fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| json!({}));
+            .unwrap_or_else(|| empty_json());
 
         Mutex::new(value)
     })
@@ -64,7 +62,7 @@ enum QueueItem {
 }
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
-    let fin_url = format!("{}id={}&quality={}", STREAM, id, audio_quality);
+    let fin_url = getsong_fmt(STREAM, id, audio_quality);
     let client = Client::builder()
         .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
@@ -81,7 +79,7 @@ async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error>
 
 async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let s: Vec<&str> = query.split(' ').collect();
-    let q = format!("{}{}", QUERYBASE, s.join("%20"));
+    let q = query_format(QUERYBASE, s.join("%20"));
     let client = Client::builder()
         .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
@@ -103,9 +101,9 @@ fn decode_base64(encoded: &str) -> String {
     if missing == 1 {
         return String::from(stripped);
     } else if missing == 2 {
-        t = format!("{}==", t);
+        t.push_str("==");
     } else if missing == 3 {
-        t = format!("{}=", t);
+        t.push_str("=");
     }
     let decoded = general_purpose::STANDARD.decode(&t).unwrap();
     return String::from_utf8(decoded).unwrap();
@@ -114,18 +112,14 @@ fn decode_base64(encoded: &str) -> String {
 fn queue_mpd_song(mpv: &mut Mpv, mpd: &str) {
     use std::fs::OpenOptions;
     use std::io::Write;
-    let path = format!(
-        "{}/mpd_{}.mpd",
-        env::temp_dir().display(),
-        uuid::Uuid::new_v4()
-    );
+    let path = temp_format(uuid::Uuid::new_v4());
     let mut f = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(&path)
         .unwrap();
-    writeln!(f, "{}", mpd).unwrap();
+    file_write(&mut f, mpd).unwrap();
     f.flush().unwrap();
     queue_song(mpv, &path);
 }
@@ -135,7 +129,7 @@ fn queue_song(mpv: &mut Mpv, url: &str) {
 }
 
 async fn get_songlink_data(id: &str, source: &str) -> Value {
-    let url = format!("https://song.link/{}/{}", source, id);
+    let url = songlink_fmt(id, source);
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -143,7 +137,7 @@ async fn get_songlink_data(id: &str, source: &str) -> Value {
     let response = client.get(&url).header(USER_AGENT, AGENT).send().await;
     // .unwrap();
     if response.is_err() {
-        return json!({});
+        return empty_json();
     }
     let re =
         regex::Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
@@ -161,57 +155,13 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .build()
         .unwrap();
 
-    let body = json!({
-        "context": {
-            "client": {
-                "hl": "en",
-                "gl": "CA",
-                "deviceMake": "",
-                "deviceModel": "",
-                "userAgent": AGENT,
-                "clientName": "WEB_REMIX",
-                "clientVersion": "1.20260107.03.00",
-                "osName": "X11",
-                "osVersion": "",
-                "originalUrl": "https://music.youtube.com/",
-                "platform": "DESKTOP",
-                "clientFormFactor": "UNKNOWN_FORM_FACTOR",
-                "userInterfaceTheme": "USER_INTERFACE_THEME_DARK",
-                "browserName": "Firefox",
-                "browserVersion": "146.0",
-                "acceptHeader": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "screenWidthPoints": 1852,
-                "screenHeightPoints": 661,
-                "screenPixelDensity": 1,
-                "screenDensityFloat": 1,
-                "musicAppInfo": {
-                    "pwaInstallabilityStatus": "PWA_INSTALLABILITY_STATUS_UNKNOWN",
-                    "webDisplayMode": "WEB_DISPLAY_MODE_BROWSER",
-                    "storeDigitalGoodsApiSupportStatus": {
-                        "playStoreDigitalGoodsApiSupportStatus": "DIGITAL_GOODS_API_SUPPORT_STATUS_UNSUPPORTED"
-                    }
-                }
-            },
-            "user": { "lockedSafetyMode": false },
-            "request": {
-                "useSsl": true,
-                "internalExperimentFlags": [],
-                "consistencyTokenJars": []
-            }
-        },
-        "query": name,
-        "params": "EgWKAQIIAWoKEAMQBBAFEAoQCQ%3D%3D",
-        "inlineSettingStatus": "INLINE_SETTING_STATUS_ON"
-    });
+    let body = query_json(name);
     let new: Vec<&str> = name.trim().split(' ').collect();
     let mut res = client
         .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
         .header(USER_AGENT, AGENT)
         .header(CONTENT_TYPE, "application/json")
-        .header(
-            REFERER,
-            format!("https://music.youtube.com/search?q={}", new.join("+")),
-        )
+        .header(REFERER, ytmusic_search_fmt(new.join("+")))
         .json(&body)
         .send()
         .await;
@@ -220,10 +170,7 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
             .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
             .header(USER_AGENT, AGENT)
             .header(CONTENT_TYPE, "application/json")
-            .header(
-                REFERER,
-                format!("https://music.youtube.com/search?q={}", new.join("+")),
-            )
+            .header(REFERER, ytmusic_search_fmt(new.join("+")))
             .json(&body)
             .send()
             .await;
@@ -296,72 +243,18 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
 
 async fn get_ytrecs(ytid: &str) -> Value {
     if ytid.is_empty() {
-        return json!({});
+        return empty_json();
     }
     let client = Client::builder()
         // .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
         .unwrap();
-    let body = json!({
-        "enablePersistentPlaylistPanel": true,
-        "tunerSettingValue": "AUTOMIX_SETTING_NORMAL",
-        "videoId": format!("{}",ytid),
-        "playlistId": format!("RDAMVM{}",ytid),
-        "isAudioOnly": true,
-        "responsiveSignals": {
-            "videoInteraction": []
-        },
-        "queueContextParams": "",
-        "context": {
-            "client": {
-                "hl": "en",
-                "gl": "CA",
-                "deviceMake": "",
-                "deviceModel": "",
-                "userAgent": AGENT,
-                "clientName": "WEB_REMIX",
-                "clientVersion": "1.20260107.03.00",
-                "osName": "X11",
-                "osVersion": "",
-                "originalUrl": format!("https://music.youtube.com/watch?v={}&list=RDAMVM{}", ytid, ytid),
-                "platform": "DESKTOP",
-                "clientFormFactor": "UNKNOWN_FORM_FACTOR",
-                "userInterfaceTheme": "USER_INTERFACE_THEME_DARK",
-                "acceptHeader": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "screenWidthPoints": 1852,
-                "screenHeightPoints": 661,
-                "screenPixelDensity": 1,
-                "screenDensityFloat": 1,
-                "utcOffsetMinutes": -420,
-                "musicAppInfo": {
-                    "webDisplayMode": "WEB_DISPLAY_MODE_BROWSER",
-                    "storeDigitalGoodsApiSupportStatus": {
-                        "playStoreDigitalGoodsApiSupportStatus":
-                            "DIGITAL_GOODS_API_SUPPORT_STATUS_UNSUPPORTED"
-                    }
-                }
-            },
-            "user": {
-                "lockedSafetyMode": false
-            },
-            "request": {
-                "useSsl": true,
-                "internalExperimentFlags": [],
-                "consistencyTokenJars": []
-            }
-        }
-    });
+    let body = ytrecs_json(ytid);
     let resp = client
         .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
         .header("Content-Type", "application/json")
         .header(USER_AGENT, AGENT)
-        .header(
-            "Referer",
-            format!(
-                "https://music.youtube.com/watch?v={}&list=RDAMVM{}",
-                ytid, ytid
-            ),
-        )
+        .header("Referer", ref_fmt(ytid))
         .json(&body)
         .send()
         .await
@@ -438,7 +331,7 @@ async fn get_quality(id: &str) -> String {
         .build()
         .unwrap();
     let res = cli
-        .get(format!("https://{}/info/?id={}", INFOSTREAM, id.trim()))
+        .get(getqual_fmt(INFOSTREAM, id.trim()))
         .header(USER_AGENT, AGENT)
         .header(REFERER, "https://tidal.squid.wtf/")
         .send()
@@ -498,15 +391,11 @@ async fn add_song(
         if tags.iter().any(|v| v.as_str() == Some(qual)) {
             audio_quality = "HI_RES_LOSSLESS";
         }
-        let cached = check_song(&format!("{}", id));
+        let cached = check_song(&id.to_string());
         if cached {
             urls.insert(
                 if cur == 0 { 0 } else { cur + 1 },
-                format!(
-                    "{}/.local/share/mscply/songs/{}",
-                    env::var("HOME").unwrap(),
-                    id
-                ),
+                songpath_fmt(&id.to_string()),
             );
             names.insert(
                 if cur == 0 { 0 } else { cur + 1 },
@@ -554,19 +443,16 @@ async fn add_song(
         }
     }
     spawn_recommendation_worker(
-        format!(
-            "{} {}",
-            items[choice - 1]
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown")
-                .to_string(),
-            items[choice - 1]
+        items[choice - 1]
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown")
+            .to_string()
+            + items[choice - 1]
                 .get("artist")
                 .and_then(|v| v.get("name"))
                 .and_then(Value::as_str)
-                .unwrap()
-        ),
+                .unwrap(),
         tx,
     );
 }
@@ -621,11 +507,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     let cached = check_song(&tidal_id_final);
                     if cached {
                         tx.send(QueueItem::Url(Vec::from([
-                            format!(
-                                "{}/.local/share/mscply/songs/{}",
-                                env::var("HOME").unwrap(),
-                                tidal_id_final
-                            ),
+                            songpath_fmt(&tidal_id_final),
                             name.to_string(),
                         ])))
                         .ok();
@@ -658,11 +540,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 }
                                 cache_mpd_song(&decoded, &tidal_id_final).await;
                                 tx.send(QueueItem::Mpd(Vec::from([
-                                    format!(
-                                        "{}/.local/share/mscply/songs/{}",
-                                        env::var("HOME").unwrap(),
-                                        tidal_id_final
-                                    ),
+                                    songpath_fmt(&tidal_id_final),
                                     name.to_string(),
                                 ])))
                                 .ok();
@@ -683,11 +561,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     }
                                     cache_url(&tidal_id_final, url).await;
                                     tx.send(QueueItem::Url(Vec::from([
-                                        format!(
-                                            "{}/.local/share/mscply/songs/{}",
-                                            env::var("HOME").unwrap(),
-                                            tidal_id_final
-                                        ),
+                                        songpath_fmt(&tidal_id_final),
                                         name.to_string(),
                                     ])))
                                     .ok();
@@ -704,11 +578,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
 }
 
 async fn cache_url(id: &str, url: &str) -> Option<String> {
-    let path = format!(
-        "{}/.local/share/mscply/songs/{}",
-        env::var("HOME").unwrap(),
-        id
-    );
+    let path = songpath_fmt(id);
     if fs::metadata(&path).is_ok() {
         return Some(path);
     }
@@ -745,7 +615,7 @@ async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
     let mut bytes: Vec<u8> = Vec::new();
     for i in 0..=r + 2 {
         let resp = client
-            .get(format!("{}{}{}", new_init[0], i, new_init[1]))
+            .get(mpd_url_builder(new_init[0], &i.to_string(), new_init[1]))
             .send()
             .await;
         if resp.is_err() {
@@ -757,20 +627,13 @@ async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
     let mut handle = fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .open(format!(
-            "{}/.local/share/mscply/songs/{}",
-            env::var("HOME").unwrap(),
-            tidal_id
-        ))
+        .open(songpath_fmt(tidal_id))
         .unwrap();
     handle.write_all(&bytes).unwrap();
 }
 
 fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
-    let path = format!(
-        "{}/.local/share/mscply/cache.json",
-        env::var("HOME").unwrap()
-    );
+    let path = home_format();
 
     // Ensure parent directory exists
     fs::create_dir_all(path.rsplit_once('/').unwrap().0).unwrap();
@@ -779,9 +642,9 @@ fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
     fs::write(path, serde_json::to_string_pretty(&**json).unwrap()).unwrap();
 }
 fn check_song(id: &str) -> bool {
-    let path = format!("{}/.local/share/mscply/songs/", env::var("HOME").unwrap());
-    fs::create_dir_all(&path).unwrap();
-    let f = fs::File::open(format!("{}/{}", path, id));
+    let path = songpath_fmt(id);
+    fs::create_dir_all(&path.rsplit_once("/").unwrap().0).unwrap();
+    let f = fs::File::open(path);
     if f.is_err() { false } else { true }
 }
 
@@ -828,9 +691,10 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     let header = Paragraph::new("mscply — Tidal / YTM player")
         .block(Block::default().borders(Borders::ALL).title(""));
 
-    let body = Paragraph::new(format!(
-        "Status: {}\nPaused: {}\nQueue: {}",
-        app.status, app.paused, app.queue_len
+    let body = Paragraph::new(status_print(
+        &app.status,
+        &app.paused.to_string(),
+        &app.queue_len.to_string(),
     ))
     .block(Block::default().borders(Borders::ALL).title("Player"));
 
@@ -895,7 +759,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
                             qual = "16 bit/44.1kHz".to_string()
                         }
 
-                        ListItem::new(format!("{prefix}{title} — {artist} ({min}:{sec}, {qual})"))
+                        ListItem::new(queuelist_item(prefix, title, artist, min, sec, qual))
                     })
                     .collect();
 
@@ -948,7 +812,7 @@ fn advance_playback(
 
     app.queue_len = (urls.len() - *current - 1) as i64;
     *current += 1;
-    app.status = format!("Playing {}", names[*current]);
+    app.status = playing(&names[*current]);
 
     if urls[*current].starts_with("<?xml") {
         queue_mpd_song(mpv, &urls[*current]);
@@ -964,7 +828,7 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let mut save = false;
     if args.len() > 1 {
-        let path = format!("{}/.local/share/mscply/songs/", env::var("HOME").unwrap());
+        let path = songpath_fmt("id").rsplit_once("/").unwrap().0.to_string();
         for i in &args[1..] {
             if i == "-c" {
                 match fs::remove_dir_all(&path) {
@@ -1197,7 +1061,7 @@ async fn main() {
                                 if current != 0 {
                                     current += 1;
                                 }
-                                app.status = format!("Playing {}", names[current]);
+                                app.status = playing(&names[current]);
                                 if urls[current].starts_with("<?xml") {
                                     queue_mpd_song(&mut mpv, &urls[current]);
                                 } else {
