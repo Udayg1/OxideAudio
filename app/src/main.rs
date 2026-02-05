@@ -24,24 +24,94 @@ use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json;
 use serde_json::{Value, json};
-use std::io::{Stdout, stderr};
 use std::io::{Write, stdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::{
+    cmp::Reverse,
+    io::{Stdout, stderr},
+};
 use std::{env, fs};
 use tokio::time;
 
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
-const QUERYBASE: &str = "https://tidal-api.binimum.org/search/?s=";
-const STREAM: &str = "https://maus.qqdl.site/track/?";
-const INFOSTREAM: &str = "triton.squid.wtf";
+static QUERYBASE: OnceLock<String> = OnceLock::new();
+static STREAM: OnceLock<String> = OnceLock::new();
+static INFOSTREAM: OnceLock<String> = OnceLock::new();
 static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 static SAVE_DATA: OnceLock<bool> = OnceLock::new();
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
+
+async fn set_url() {
+    let js_url = "https://tidal.squid.wtf/_app/immutable/chunks/C_bfIKIg.js";
+    let client = Client::builder()
+        .timeout(Duration::from_secs(5))
+        .user_agent(AGENT)
+        .build()
+        .unwrap();
+    let mut res = client
+        .get(js_url)
+        .header(REFERER, "https://tidal.squid.wtf")
+        .send()
+        .await;
+    let mut count = 0;
+    while res.is_err() && count <= 5 {
+        res = client
+            .get(js_url)
+            .header(REFERER, "https://tidal.squid.wtf")
+            .send()
+            .await;
+        count += 1;
+    }
+    let js_obj = res.unwrap().text().await.unwrap();
+    let sind = js_obj.find("J=").unwrap() + 2;
+    let eind = &js_obj[sind + 1..].find("}]").unwrap() + 3 + sind;
+    let arr = &js_obj[sind..eind];
+    let mut s = arr.to_string();
+    s = s.replace("!1", "false");
+    s = s.replace("!0", "true");
+
+    for key in ["name", "baseUrl", "weight", "requiresProxy", "category"] {
+        s = s.replace(&format!("{key}:"), &format!("\"{key}\":"));
+    }
+    let mut json_arr: Vec<Value> = serde_json::from_str(&s).unwrap();
+    json_arr.sort_by_key(|x| Reverse(x.get("weight").and_then(Value::as_i64)));
+    eprintln!("{:?}", json_arr);
+    INFOSTREAM
+        .set(
+            json_arr[0]
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string(),
+        )
+        .unwrap();
+    STREAM
+        .set(format!(
+            "{}/track/?",
+            json_arr[0]
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string()
+        ))
+        .unwrap();
+    QUERYBASE
+        .set(format!(
+            "{}/search/?s=",
+            json_arr[0]
+                .get("baseUrl")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string()
+        ))
+        .unwrap();
+    eprintln!("{}", QUERYBASE.get().unwrap());
+}
 
 fn global_json() -> &'static Mutex<Value> {
     ID_CACHE.get_or_init(|| {
@@ -62,7 +132,7 @@ enum QueueItem {
 }
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
-    let fin_url = getsong_fmt(STREAM, id, audio_quality);
+    let fin_url = getsong_fmt(STREAM.get().unwrap(), id, audio_quality);
     let client = Client::builder()
         .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
@@ -79,7 +149,7 @@ async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error>
 
 async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let s: Vec<&str> = query.split(' ').collect();
-    let q = query_format(QUERYBASE, s.join("%20"));
+    let q = query_format(QUERYBASE.get().unwrap(), s.join("%20"));
     let client = Client::builder()
         .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
@@ -331,7 +401,7 @@ async fn get_quality(id: &str) -> String {
         .build()
         .unwrap();
     let res = cli
-        .get(getqual_fmt(INFOSTREAM, id.trim()))
+        .get(getqual_fmt(INFOSTREAM.get().unwrap(), id.trim()))
         .header(USER_AGENT, AGENT)
         .header(REFERER, "https://tidal.squid.wtf/")
         .send()
@@ -845,6 +915,7 @@ async fn main() {
             }
         }
     }
+    set_url().await;
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
     let mut mpv = match Mpv::new() {

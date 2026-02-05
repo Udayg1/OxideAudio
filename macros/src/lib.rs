@@ -66,7 +66,7 @@ pub fn ref_fmt(ytid: &str) -> String {
     )
 }
 pub fn getqual_fmt(infostream: &str, id: &str) -> String {
-    format!("https://{}/info/?id={}", infostream, id)
+    format!("{}/info/?id={}", infostream, id)
 }
 pub fn ytrecs_json(ytid: &str) -> Value {
     json!({
