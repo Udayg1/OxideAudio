@@ -36,7 +36,7 @@ use std::{
 };
 use std::{env, fs};
 use tokio::time;
-
+static PREF_QUAL: OnceLock<String> = OnceLock::new();
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 static QUERYBASE: OnceLock<String> = OnceLock::new();
@@ -80,7 +80,6 @@ async fn set_url() {
     }
     let mut json_arr: Vec<Value> = serde_json::from_str(&s).unwrap();
     json_arr.sort_by_key(|x| Reverse(x.get("weight").and_then(Value::as_i64)));
-    eprintln!("{:?}", json_arr);
     INFOSTREAM
         .set(
             json_arr[0]
@@ -110,7 +109,6 @@ async fn set_url() {
                 .to_string()
         ))
         .unwrap();
-    eprintln!("{}", QUERYBASE.get().unwrap());
 }
 
 fn global_json() -> &'static Mutex<Value> {
@@ -414,8 +412,13 @@ async fn get_quality(id: &str) -> String {
         .get("data")
         .and_then(|v| v.get("audioQuality"))
         .and_then(Value::as_str);
+    let pref = PREF_QUAL.get().unwrap();
     if !qual.is_none() {
         let mut quality = qual.unwrap();
+        if quality == "LOSSLESS" && (pref == "HIGH" || pref == "LOW") {
+            return pref.to_string();
+        }
+
         let tags = res
             .get("data")
             .and_then(|v| v.get("mediaMetadata"))
@@ -461,6 +464,7 @@ async fn add_song(
         if tags.iter().any(|v| v.as_str() == Some(qual)) {
             audio_quality = "HI_RES_LOSSLESS";
         }
+
         let cached = check_song(&id.to_string());
         if cached {
             urls.insert(
@@ -476,6 +480,12 @@ async fn add_song(
                     .to_string(),
             )
         } else {
+            let pref = PREF_QUAL.get().unwrap();
+            if (audio_quality == "LOSSLESS" || audio_quality == "HI_RES_LOSSLESS")
+                && (pref == "HIGH" || pref == "LOW")
+            {
+                audio_quality = pref;
+            }
             let song = get_song(id, audio_quality).await.unwrap();
             let manifest = song
                 .get("data")
@@ -895,6 +905,7 @@ fn advance_playback(
 
 #[tokio::main]
 async fn main() {
+    let mut qual = "LOSSLESS";
     let args: Vec<String> = env::args().collect();
     let mut save = false;
     if args.len() > 1 {
@@ -912,9 +923,16 @@ async fn main() {
                 return;
             } else if i == "-s" {
                 save = true;
+            } else if i == "-n" {
+                qual = "HIGH";
+            } else if i == "-l" {
+                qual = "LOW"
             }
         }
     }
+    PREF_QUAL
+        .set(qual.to_string())
+        .expect("Quality already specified");
     set_url().await;
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
