@@ -90,30 +90,25 @@ async fn set_url() {
         )
         .unwrap();
     STREAM
-        .set(format!(
-            "{}/track/?",
-            json_arr[0]
-                .get("baseUrl")
-                .and_then(Value::as_str)
-                .unwrap()
-                .to_string()
-        ))
+        .set(concat_strings(Vec::from([
+            json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+            "/track/?",
+        ])))
         .unwrap();
     QUERYBASE
-        .set(format!(
-            "{}/search/?s=",
-            json_arr[0]
-                .get("baseUrl")
-                .and_then(Value::as_str)
-                .unwrap()
-                .to_string()
-        ))
+        .set(concat_strings(Vec::from([
+            json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+            "/search/?s=",
+        ])))
         .unwrap();
 }
 
 fn global_json() -> &'static Mutex<Value> {
     ID_CACHE.get_or_init(|| {
-        let path = home_format();
+        let path = concat_strings(Vec::from([
+            &env::var("HOME").unwrap(),
+            "/.local/share/mscply/cache.json",
+        ]));
 
         let value = fs::read_to_string(&path)
             .ok()
@@ -130,7 +125,13 @@ enum QueueItem {
 }
 
 async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
-    let fin_url = getsong_fmt(STREAM.get().unwrap(), id, audio_quality);
+    let fin_url = concat_strings(Vec::from([
+        STREAM.get().unwrap(),
+        "id=",
+        &id.to_string(),
+        "&quality=",
+        audio_quality,
+    ]));
     let client = Client::builder()
         .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
@@ -147,7 +148,10 @@ async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error>
 
 async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let s: Vec<&str> = query.split(' ').collect();
-    let q = query_format(QUERYBASE.get().unwrap(), s.join("%20"));
+    let q = concat_strings(Vec::from([
+        QUERYBASE.get().unwrap(),
+        s.join("%20").as_str(),
+    ]));
     let client = Client::builder()
         .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
@@ -180,7 +184,11 @@ fn decode_base64(encoded: &str) -> String {
 fn queue_mpd_song(mpv: &mut Mpv, mpd: &str) {
     use std::fs::OpenOptions;
     use std::io::Write;
-    let path = temp_format(uuid::Uuid::new_v4());
+    let path = concat_strings(Vec::from([
+        &env::temp_dir().display().to_string(),
+        "/mpd_",
+        &uuid::Uuid::new_v4().to_string(),
+    ]));
     let mut f = OpenOptions::new()
         .write(true)
         .create(true)
@@ -197,7 +205,7 @@ fn queue_song(mpv: &mut Mpv, url: &str) {
 }
 
 async fn get_songlink_data(id: &str, source: &str) -> Value {
-    let url = songlink_fmt(id, source);
+    let url = concat_strings(Vec::from(["https://song.link/", source, "/", id]));
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -229,7 +237,13 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
         .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
         .header(USER_AGENT, AGENT)
         .header(CONTENT_TYPE, "application/json")
-        .header(REFERER, ytmusic_search_fmt(new.join("+")))
+        .header(
+            REFERER,
+            concat_strings(Vec::from([
+                "https://music.youtube.com/search?q=",
+                new.join("+").as_str(),
+            ])),
+        )
         .json(&body)
         .send()
         .await;
@@ -238,7 +252,13 @@ async fn convert_to_ytm(name: &str) -> Option<String> {
             .post("https://music.youtube.com/youtubei/v1/search?prettyPrint=false")
             .header(USER_AGENT, AGENT)
             .header(CONTENT_TYPE, "application/json")
-            .header(REFERER, ytmusic_search_fmt(new.join("+")))
+            .header(
+                REFERER,
+                concat_strings(Vec::from([
+                    "https://music.youtube.com/search?q=",
+                    new.join("+").as_str(),
+                ])),
+            )
             .json(&body)
             .send()
             .await;
@@ -322,7 +342,15 @@ async fn get_ytrecs(ytid: &str) -> Value {
         .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
         .header("Content-Type", "application/json")
         .header(USER_AGENT, AGENT)
-        .header("Referer", ref_fmt(ytid))
+        .header(
+            "Referer",
+            concat_strings(Vec::from([
+                "https://music.youtube.com/watch?v=",
+                ytid,
+                "&list=RDAMVM",
+                ytid,
+            ])),
+        )
         .json(&body)
         .send()
         .await
@@ -399,7 +427,11 @@ async fn get_quality(id: &str) -> String {
         .build()
         .unwrap();
     let res = cli
-        .get(getqual_fmt(INFOSTREAM.get().unwrap(), id.trim()))
+        .get(concat_strings(Vec::from([
+            INFOSTREAM.get().unwrap(),
+            "/info/?id=",
+            id,
+        ])))
         .header(USER_AGENT, AGENT)
         .header(REFERER, "https://tidal.squid.wtf/")
         .send()
@@ -469,7 +501,11 @@ async fn add_song(
         if cached {
             urls.insert(
                 if cur == 0 { 0 } else { cur + 1 },
-                songpath_fmt(&id.to_string()),
+                concat_strings(Vec::from([
+                    &env::var("HOME").unwrap(),
+                    "/.local/share/mscply/songs/",
+                    &id.to_string(),
+                ])),
             );
             names.insert(
                 if cur == 0 { 0 } else { cur + 1 },
@@ -587,7 +623,11 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     let cached = check_song(&tidal_id_final);
                     if cached {
                         tx.send(QueueItem::Url(Vec::from([
-                            songpath_fmt(&tidal_id_final),
+                            concat_strings(Vec::from([
+                                &env::var("HOME").unwrap(),
+                                "/.local/share/mscply/songs/",
+                                &tidal_id_final,
+                            ])),
                             name.to_string(),
                         ])))
                         .ok();
@@ -620,7 +660,11 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 }
                                 cache_mpd_song(&decoded, &tidal_id_final).await;
                                 tx.send(QueueItem::Mpd(Vec::from([
-                                    songpath_fmt(&tidal_id_final),
+                                    concat_strings(Vec::from([
+                                        &env::var("HOME").unwrap(),
+                                        "/.local/share/mscply/songs/",
+                                        &tidal_id_final,
+                                    ])),
                                     name.to_string(),
                                 ])))
                                 .ok();
@@ -641,7 +685,11 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     }
                                     cache_url(&tidal_id_final, url).await;
                                     tx.send(QueueItem::Url(Vec::from([
-                                        songpath_fmt(&tidal_id_final),
+                                        concat_strings(Vec::from([
+                                            &env::var("HOME").unwrap(),
+                                            "/.local/share/mscply/songs/",
+                                            &tidal_id_final,
+                                        ])),
                                         name.to_string(),
                                     ])))
                                     .ok();
@@ -658,7 +706,11 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
 }
 
 async fn cache_url(id: &str, url: &str) -> Option<String> {
-    let path = songpath_fmt(id);
+    let path = concat_strings(Vec::from([
+        &env::var("HOME").unwrap(),
+        "/.local/share/mscply/songs/",
+        id,
+    ]));
     if fs::metadata(&path).is_ok() {
         return Some(path);
     }
@@ -695,7 +747,11 @@ async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
     let mut bytes: Vec<u8> = Vec::new();
     for i in 0..=r + 2 {
         let resp = client
-            .get(mpd_url_builder(new_init[0], &i.to_string(), new_init[1]))
+            .get(concat_strings(Vec::from([
+                new_init[0],
+                &i.to_string(),
+                new_init[1],
+            ])))
             .send()
             .await;
         if resp.is_err() {
@@ -707,13 +763,20 @@ async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
     let mut handle = fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .open(songpath_fmt(tidal_id))
+        .open(concat_strings(Vec::from([
+            &env::var("HOME").unwrap(),
+            "/.local/share/mscply/songs/",
+            tidal_id,
+        ])))
         .unwrap();
     handle.write_all(&bytes).unwrap();
 }
 
 fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
-    let path = home_format();
+    let path = concat_strings(Vec::from([
+        &env::var("HOME").unwrap(),
+        "/.local/share/mscply/cache.json",
+    ]));
 
     // Ensure parent directory exists
     fs::create_dir_all(path.rsplit_once('/').unwrap().0).unwrap();
@@ -722,7 +785,11 @@ fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
     fs::write(path, serde_json::to_string_pretty(&**json).unwrap()).unwrap();
 }
 fn check_song(id: &str) -> bool {
-    let path = songpath_fmt(id);
+    let path = concat_strings(Vec::from([
+        &env::var("HOME").unwrap(),
+        "/.local/share/mscply/songs/",
+        id,
+    ]));
     fs::create_dir_all(&path.rsplit_once("/").unwrap().0).unwrap();
     let f = fs::File::open(path);
     if f.is_err() { false } else { true }
@@ -771,11 +838,14 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     let header = Paragraph::new("mscply — Tidal / YTM player")
         .block(Block::default().borders(Borders::ALL).title(""));
 
-    let body = Paragraph::new(status_print(
-        &app.status,
+    let body = Paragraph::new(concat_strings(Vec::from([
+        "Status: ",
+        app.status.as_str(),
+        "\nPaused: ",
         &app.paused.to_string(),
+        "\nQueue: ",
         &app.queue_len.to_string(),
-    ))
+    ])))
     .block(Block::default().borders(Borders::ALL).title("Player"));
 
     let footer = Paragraph::new(match app.mode {
@@ -838,8 +908,18 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
                         if qual == "LOSSLESS" {
                             qual = "16 bit/44.1kHz".to_string()
                         }
-
-                        ListItem::new(queuelist_item(prefix, title, artist, min, sec, qual))
+                        ListItem::new(concat_strings(Vec::from([
+                            prefix,
+                            title,
+                            "—",
+                            artist,
+                            " (",
+                            &min.to_string(),
+                            ":",
+                            &sec.to_string(),
+                            ", ",
+                            &qual,
+                        ])))
                     })
                     .collect();
 
@@ -892,7 +972,7 @@ fn advance_playback(
 
     app.queue_len = (urls.len() - *current - 1) as i64;
     *current += 1;
-    app.status = playing(&names[*current]);
+    app.status = concat_strings(Vec::from(["Playing ", &names[*current]]));
 
     if urls[*current].starts_with("<?xml") {
         queue_mpd_song(mpv, &urls[*current]);
@@ -909,7 +989,15 @@ async fn main() {
     let args: Vec<String> = env::args().collect();
     let mut save = false;
     if args.len() > 1 {
-        let path = songpath_fmt("id").rsplit_once("/").unwrap().0.to_string();
+        let path = concat_strings(Vec::from([
+            &env::var("HOME").unwrap(),
+            "/.local/share/mscply/songs/",
+            "i",
+        ]))
+        .rsplit_once("/")
+        .unwrap()
+        .0
+        .to_string();
         for i in &args[1..] {
             if i == "-c" {
                 match fs::remove_dir_all(&path) {
@@ -1150,7 +1238,8 @@ async fn main() {
                                 if current != 0 {
                                     current += 1;
                                 }
-                                app.status = playing(&names[current]);
+                                app.status =
+                                    concat_strings(Vec::from(["Playing ", &names[current]]));
                                 if urls[current].starts_with("<?xml") {
                                     queue_mpd_song(&mut mpv, &urls[current]);
                                 } else {

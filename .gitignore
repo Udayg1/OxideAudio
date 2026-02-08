@@ -4,3 +4,4 @@ t.txt
 .log.txt
 .gitignore
 mpv.log
+.zed/
