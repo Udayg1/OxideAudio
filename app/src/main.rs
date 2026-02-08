@@ -46,61 +46,63 @@ static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 static SAVE_DATA: OnceLock<bool> = OnceLock::new();
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 
-async fn set_url() {
-    let js_url = "https://tidal.squid.wtf/_app/immutable/chunks/C_bfIKIg.js";
-    let client = Client::builder()
-        .timeout(Duration::from_secs(5))
-        .user_agent(AGENT)
-        .build()
-        .unwrap();
-    let mut res = client
-        .get(js_url)
-        .header(REFERER, "https://tidal.squid.wtf")
-        .send()
-        .await;
-    let mut count = 0;
-    while res.is_err() && count <= 5 {
-        res = client
+fn set_url() {
+    tokio::spawn(async {
+        let js_url = "https://tidal.squid.wtf/_app/immutable/chunks/C_bfIKIg.js";
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .user_agent(AGENT)
+            .build()
+            .unwrap();
+        let mut res = client
             .get(js_url)
             .header(REFERER, "https://tidal.squid.wtf")
             .send()
             .await;
-        count += 1;
-    }
-    let js_obj = res.unwrap().text().await.unwrap();
-    let sind = js_obj.find("J=").unwrap() + 2;
-    let eind = &js_obj[sind + 1..].find("}]").unwrap() + 3 + sind;
-    let arr = &js_obj[sind..eind];
-    let mut s = arr.to_string();
-    s = s.replace("!1", "false");
-    s = s.replace("!0", "true");
+        let mut count = 0;
+        while res.is_err() && count <= 5 {
+            res = client
+                .get(js_url)
+                .header(REFERER, "https://tidal.squid.wtf")
+                .send()
+                .await;
+            count += 1;
+        }
+        let js_obj = res.unwrap().text().await.unwrap();
+        let sind = js_obj.find("J=").unwrap() + 2;
+        let eind = &js_obj[sind + 1..].find("}]").unwrap() + 3 + sind;
+        let arr = &js_obj[sind..eind];
+        let mut s = arr.to_string();
+        s = s.replace("!1", "false");
+        s = s.replace("!0", "true");
 
-    for key in ["name", "baseUrl", "weight", "requiresProxy", "category"] {
-        s = s.replace(&format!("{key}:"), &format!("\"{key}\":"));
-    }
-    let mut json_arr: Vec<Value> = serde_json::from_str(&s).unwrap();
-    json_arr.sort_by_key(|x| Reverse(x.get("weight").and_then(Value::as_i64)));
-    INFOSTREAM
-        .set(
-            json_arr[0]
-                .get("baseUrl")
-                .and_then(Value::as_str)
-                .unwrap()
-                .to_string(),
-        )
-        .unwrap();
-    STREAM
-        .set(concat_strings(Vec::from([
-            json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
-            "/track/?",
-        ])))
-        .unwrap();
-    QUERYBASE
-        .set(concat_strings(Vec::from([
-            json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
-            "/search/?s=",
-        ])))
-        .unwrap();
+        for key in ["name", "baseUrl", "weight", "requiresProxy", "category"] {
+            s = s.replace(&format!("{key}:"), &format!("\"{key}\":"));
+        }
+        let mut json_arr: Vec<Value> = serde_json::from_str(&s).unwrap();
+        json_arr.sort_by_key(|x| Reverse(x.get("weight").and_then(Value::as_i64)));
+        INFOSTREAM
+            .set(
+                json_arr[0]
+                    .get("baseUrl")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+            )
+            .unwrap();
+        STREAM
+            .set(concat_strings(Vec::from([
+                json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+                "/track/?",
+            ])))
+            .unwrap();
+        QUERYBASE
+            .set(concat_strings(Vec::from([
+                json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+                "/search/?s=",
+            ])))
+            .unwrap();
+    });
 }
 
 fn global_json() -> &'static Mutex<Value> {
@@ -777,11 +779,7 @@ fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
         &env::var("HOME").unwrap(),
         "/.local/share/mscply/cache.json",
     ]));
-
-    // Ensure parent directory exists
     fs::create_dir_all(path.rsplit_once('/').unwrap().0).unwrap();
-
-    // Serialize and write the JSON
     fs::write(path, serde_json::to_string_pretty(&**json).unwrap()).unwrap();
 }
 fn check_song(id: &str) -> bool {
@@ -849,7 +847,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     .block(Block::default().borders(Borders::ALL).title("Player"));
 
     let footer = Paragraph::new(match app.mode {
-        UiMode::Normal => "[a] Add  [p] Pause  [r] Resume  [s] Skip  [h] Quit",
+        UiMode::Normal => "[a] Add  [p] Pause  [r] Resume  [s] Skip  [f] seek forward  [b] seek backward  [h] Quit",
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
         UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",
     })
@@ -919,6 +917,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
                             &sec.to_string(),
                             ", ",
                             &qual,
+                            ")",
                         ])))
                     })
                     .collect();
@@ -1021,7 +1020,7 @@ async fn main() {
     PREF_QUAL
         .set(qual.to_string())
         .expect("Quality already specified");
-    set_url().await;
+    set_url();
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
     let mut mpv = match Mpv::new() {
@@ -1158,6 +1157,16 @@ async fn main() {
                             app.search_query.clear();
                             app.mode = UiMode::Search;
                         }
+                        KeyCode::Char('f') => {
+                            if !mpv.get_property::<bool>("idle-active").unwrap() {
+                                mpv.command("seek", &["5", "relative"]).unwrap();
+                            }
+                        }
+                        KeyCode::Char('b') => {
+                            if !mpv.get_property::<bool>("idle-active").unwrap() {
+                                mpv.command("seek", &["-5", "relative"]).unwrap();
+                            }
+                        }
                         _ => {}
                     },
 
@@ -1170,6 +1179,9 @@ async fn main() {
                             if app.search_query.is_empty() {
                                 app.mode = UiMode::Normal;
                                 app.dirty = true;
+                                continue;
+                            }
+                            if QUERYBASE.get().is_none() {
                                 continue;
                             }
                             let res = search_result(&app.search_query).await.unwrap();
