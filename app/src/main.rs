@@ -336,11 +336,11 @@ async fn get_ytrecs(ytid: &str) -> Value {
         return empty_json();
     }
     let client = Client::builder()
-        // .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
         .build()
         .unwrap();
     let body = ytrecs_json(ytid);
-    let resp = client
+    let mut resp = client
         .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
         .header("Content-Type", "application/json")
         .header(USER_AGENT, AGENT)
@@ -355,9 +355,29 @@ async fn get_ytrecs(ytid: &str) -> Value {
         )
         .json(&body)
         .send()
-        .await
-        .unwrap();
-    resp.json::<Value>().await.unwrap()
+        .await;
+    while resp.is_err() {
+        resp = client
+            .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
+            .header("Content-Type", "application/json")
+            .header(USER_AGENT, AGENT)
+            .header(
+                "Referer",
+                concat_strings(Vec::from([
+                    "https://music.youtube.com/watch?v=",
+                    ytid,
+                    "&list=RDAMVM",
+                    ytid,
+                ])),
+            )
+            .json(&body)
+            .send()
+            .await;
+    }
+    let res = resp.unwrap().text().await.unwrap();
+    eprintln!("{}", res);
+    serde_json::from_str(&res).unwrap()
+    // res.json::<Value>().await.unwrap()
 }
 
 fn get_ytrec_array(recs: Value) -> Vec<Value> {
@@ -847,7 +867,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     .block(Block::default().borders(Borders::ALL).title("Player"));
 
     let footer = Paragraph::new(match app.mode {
-        UiMode::Normal => "[a] Add  [p] Pause  [r] Resume  [s] Skip  [f] seek forward  [b] seek backward  [h] Quit",
+        UiMode::Normal => "[a] Add  [p] Pause/Resume  [r] Back  [s] Skip  [f] seek forward  [b] seek backward  [h] Quit",
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
         UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",
     })
@@ -1136,21 +1156,29 @@ async fn main() {
                                 mpv.set_property("pause", true).unwrap();
                                 app.paused = true;
                                 app.dirty = true;
-                            }
-                        }
-                        KeyCode::Char('r') => {
-                            if app.paused {
+                            } else if app.paused {
                                 mpv.set_property("pause", false).unwrap();
                                 app.paused = false;
                                 app.dirty = true;
                             }
                         }
-                        KeyCode::Char('s') => {
-                            if last_mode_switch.elapsed() >= skip_every {
-                                skipped = true;
-                                advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
-                                last_mode_switch = Instant::now();
+                        KeyCode::Char('r') => {
+                            if current > 0 && urls.len() > 0 {
+                                if urls[current - 1].starts_with("<xml") {
+                                    queue_mpd_song(&mut mpv, &urls[current - 1]);
+                                } else {
+                                    queue_song(&mut mpv, &urls[current - 1]);
+                                }
+                                app.status =
+                                    concat_strings(Vec::from(["Playing ", &names[current - 1]]));
+                                app.queue_len += 1;
+                                current -= 1;
+                                app.dirty = true;
                             }
+                        }
+                        KeyCode::Char('s') => {
+                            skipped = true;
+                            advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
                         }
                         KeyCode::Char('a') => {
                             app.dirty = true;
@@ -1184,7 +1212,11 @@ async fn main() {
                             if QUERYBASE.get().is_none() {
                                 continue;
                             }
-                            let res = search_result(&app.search_query).await.unwrap();
+                            let mut ress = search_result(&app.search_query).await;
+                            while ress.is_err() {
+                                ress = search_result(&app.search_query).await;
+                            }
+                            let res = ress.unwrap();
                             app.search_results = res
                                 .get("data")
                                 .and_then(|v| v.get("items"))
