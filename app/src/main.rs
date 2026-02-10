@@ -228,7 +228,7 @@ async fn get_songlink_data(id: &str, source: &str) -> Value {
 
 async fn convert_to_ytm(name: &str) -> Option<String> {
     let client = Client::builder()
-        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .timeout(Duration::from_secs(5)) 
         .build()
         .unwrap();
 
@@ -335,7 +335,7 @@ async fn get_ytrecs(ytid: &str) -> Value {
         return empty_json();
     }
     let client = Client::builder()
-        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .timeout(Duration::from_secs(5)) 
         .build()
         .unwrap();
     let body = ytrecs_json(ytid);
@@ -442,7 +442,7 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
 
 async fn get_quality(id: &str) -> String {
     let cli = Client::builder()
-        .timeout(Duration::from_secs(5)) // 5-second timeout for all requests
+        .timeout(Duration::from_secs(5)) 
         .build()
         .unwrap();
     let res = cli
@@ -1182,18 +1182,6 @@ async fn main() {
                             }
                         }
                         KeyCode::Char('r') => {
-                            // if current > 0 && urls.len() > 0 {
-                            //     if urls[current - 1].starts_with("<xml") {
-                            //         queue_mpd_song(&mut mpv, &urls[current - 1]);
-                            //     } else {
-                            //         queue_song(&mut mpv, &urls[current - 1]);
-                            //     }
-                            //     app.status =
-                            //         concat_strings(Vec::from(["Playing ", &names[current - 1]]));
-                            //     app.queue_len += 1;
-                            //     current -= 1;
-                            //     app.dirty = true;
-                            // }
                             skipped = true;
                             rewind_playback(&mut mpv, &urls, &names, &mut current, &mut app);
                         }
