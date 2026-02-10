@@ -4,9 +4,8 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use libmpv2::{self, Mpv};
 use libmpv2::{
-    Format,
+    Format, Mpv,
     events::{Event as eve, PropertyData},
 };
 use macros::*;
@@ -36,6 +35,7 @@ use std::{
 };
 use std::{env, fs};
 use tokio::time;
+
 static PREF_QUAL: OnceLock<String> = OnceLock::new();
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
@@ -209,11 +209,10 @@ fn queue_song(mpv: &mut Mpv, url: &str) {
 async fn get_songlink_data(id: &str, source: &str) -> Value {
     let url = concat_strings(Vec::from(["https://song.link/", source, "/", id]));
     let client = Client::builder()
-        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .unwrap();
     let response = client.get(&url).header(USER_AGENT, AGENT).send().await;
-    // .unwrap();
     if response.is_err() {
         return empty_json();
     }
@@ -375,9 +374,7 @@ async fn get_ytrecs(ytid: &str) -> Value {
             .await;
     }
     let res = resp.unwrap().text().await.unwrap();
-    eprintln!("{}", res);
     serde_json::from_str(&res).unwrap()
-    // res.json::<Value>().await.unwrap()
 }
 
 fn get_ytrec_array(recs: Value) -> Vec<Value> {
@@ -983,14 +980,15 @@ fn advance_playback(
         app.status = "Nothing is playing".to_string();
         app.queue_len = 0;
         app.dirty = true;
+        *current = urls.len();
         if !mpv.get_property::<bool>("idle-active").unwrap() {
             mpv.command("seek", &["100", "absolute-percent"]).unwrap();
         }
         return;
     }
 
-    app.queue_len = (urls.len() - *current - 1) as i64;
     *current += 1;
+    app.queue_len = (urls.len() - *current - 1) as i64;
     app.status = concat_strings(Vec::from(["Playing ", &names[*current]]));
 
     if urls[*current].starts_with("<?xml") {
@@ -1000,6 +998,25 @@ fn advance_playback(
     }
 
     app.dirty = true;
+}
+fn rewind_playback(
+    mpv: &mut Mpv,
+    urls: &[String],
+    names: &[String],
+    current: &mut usize,
+    app: &mut App,
+) {
+    if *current > 0 && urls.len() > 0 {
+        if urls[*current - 1].starts_with("<xml") {
+            queue_mpd_song(mpv, &urls[*current - 1]);
+        } else {
+            queue_song(mpv, &urls[*current - 1]);
+        }
+        *current -= 1;
+        app.status = concat_strings(Vec::from(["Playing ", &names[*current]]));
+        app.queue_len = (urls.len() - *current - 1) as i64;
+        app.dirty = true;
+    }
 }
 
 #[tokio::main]
@@ -1084,28 +1101,30 @@ async fn main() {
         }
         if let Some(event) = mpv.wait_event(0.05) {
             // if event.is_err(){continue;}
-            match event.unwrap() {
-                eve::EndFile(_) => {
-                    if !skipped && !auto_started {
-                        auto_started = true;
-                        advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
-                    }
-                    skipped = false;
-                }
-
-                eve::PropertyChange {
-                    reply_userdata: 2,
-                    change,
-                    ..
-                } => {
-                    if let PropertyData::Flag(true) = change {
-                        if !auto_started && current == 0 && !urls.is_empty() {
+            match event {
+                Ok(e) => match e {
+                    eve::EndFile(_) => {
+                        if !skipped && !auto_started {
                             auto_started = true;
                             advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
                         }
+                        skipped = false;
                     }
-                }
 
+                    eve::PropertyChange {
+                        reply_userdata: 2,
+                        change,
+                        ..
+                    } => {
+                        if let PropertyData::Flag(true) = change {
+                            if !auto_started && current == 0 && !urls.is_empty() {
+                                auto_started = true;
+                                advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 _ => {}
             }
         }
@@ -1163,18 +1182,20 @@ async fn main() {
                             }
                         }
                         KeyCode::Char('r') => {
-                            if current > 0 && urls.len() > 0 {
-                                if urls[current - 1].starts_with("<xml") {
-                                    queue_mpd_song(&mut mpv, &urls[current - 1]);
-                                } else {
-                                    queue_song(&mut mpv, &urls[current - 1]);
-                                }
-                                app.status =
-                                    concat_strings(Vec::from(["Playing ", &names[current - 1]]));
-                                app.queue_len += 1;
-                                current -= 1;
-                                app.dirty = true;
-                            }
+                            // if current > 0 && urls.len() > 0 {
+                            //     if urls[current - 1].starts_with("<xml") {
+                            //         queue_mpd_song(&mut mpv, &urls[current - 1]);
+                            //     } else {
+                            //         queue_song(&mut mpv, &urls[current - 1]);
+                            //     }
+                            //     app.status =
+                            //         concat_strings(Vec::from(["Playing ", &names[current - 1]]));
+                            //     app.queue_len += 1;
+                            //     current -= 1;
+                            //     app.dirty = true;
+                            // }
+                            skipped = true;
+                            rewind_playback(&mut mpv, &urls, &names, &mut current, &mut app);
                         }
                         KeyCode::Char('s') => {
                             skipped = true;
@@ -1276,7 +1297,7 @@ async fn main() {
                                 tx.clone(),
                             )
                             .await;
-                            app.queue_len += 1;
+                            app.queue_len = (urls.len() - current - 1) as i64;
                             app.dirty = true;
                             if mpv.get_property::<i64>("playlist-pos").unwrap() == -1 {
                                 if current != 0 {
