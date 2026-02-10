@@ -741,7 +741,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                             "/.local/share/mscply/songs/",
                                             &tidal_id_final,
                                         ])),
-                                        concat_strings(Vec::from([name, " - " ,artist])),
+                                        concat_strings(Vec::from([name, " - ", artist])),
                                     ])))
                                     .ok();
                                 }
@@ -881,12 +881,21 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[String]) {
             Constraint::Length(3),
         ])
         .split(f.area());
-    let [top_body, bottom_body] = Layout::vertical([Constraint::Fill(1); 2])
-        .spacing(Spacing::Overlap(1))
-        .areas(chunks[1]);
+    let wid = f.area().width;
+    let hei = f.area().height;
+    let top_body;
+    let bottom_body;
+    if wid as f32 / hei as f32 > 1.5 {
+        [top_body, bottom_body] = Layout::horizontal([Constraint::Fill(1); 2])
+            .spacing(Spacing::Overlap(1))
+            .areas(chunks[1]);
+    } else {
+        [top_body, bottom_body] = Layout::vertical([Constraint::Fill(1); 2])
+            .spacing(Spacing::Overlap(1))
+            .areas(chunks[1]);
+    }
     let header = Paragraph::new("mscply — Tidal / YTM player")
         .block(Block::default().borders(Borders::ALL).title(""));
-
     let body = Paragraph::new(concat_strings(Vec::from([
         "Status: ",
         app.status.as_str(),
@@ -901,11 +910,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[String]) {
             .title("Player")
             .merge_borders(merge::MergeStrategy::Exact),
     );
-    let mut playlst = String::new();
-    for i in playlist {
-        playlst += i;
-        playlst += "\n";
-    }
+    let playlst = playlist.join("\n");
     let body_playlist = Paragraph::new(playlst).block(
         Block::default()
             .borders(Borders::ALL)
@@ -929,7 +934,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[String]) {
 
         match app.mode {
             UiMode::Search => {
-                let input = Paragraph::new(app.search_query.as_str())
+                let input = Paragraph::new(app.search_query.to_string() + "_")
                     .alignment(Alignment::Left)
                     .block(Block::default().borders(Borders::ALL).title("Search"));
                 f.render_widget(input, area);
@@ -1140,6 +1145,7 @@ async fn main() {
     // mpv.set_property("log-file", "./mpv.log").unwrap();
     let mut auto_started = false;
     let mut skipped = false;
+    let mut last = terminal.size().unwrap();
     loop {
         if !IS_RUNNING.load(Ordering::SeqCst) && current + 1 == names.len() {
             if names.len() > 1 {
@@ -1147,7 +1153,6 @@ async fn main() {
             }
         }
         if let Some(event) = mpv.wait_event(0.05) {
-            // if event.is_err(){continue;}
             match event {
                 Ok(e) => match e {
                     eve::EndFile(_) => {
@@ -1213,12 +1218,9 @@ async fn main() {
             }
             app.dirty = true;
         }
-        if crossterm::event::poll(time::Duration::from_millis(100)).unwrap() {
-            if let Event::Key(key) = crossterm::event::read().unwrap() {
-                if !key.is_press() {
-                    continue;
-                }
-                match app.mode {
+        if crossterm::event::poll(time::Duration::from_millis(10)).unwrap() {
+            match crossterm::event::read().unwrap() {
+                Event::Key(key) => match app.mode {
                     UiMode::Normal => match key.code {
                         KeyCode::Char('h') => {
                             app.dirty = true;
@@ -1358,7 +1360,26 @@ async fn main() {
                         }
                         _ => {}
                     },
+                },
+                Event::Resize(_, _) => {
+                    let area = terminal.size().unwrap();
+
+                    if area.width != last.width || area.height != last.height {
+                        last = area;
+
+                        terminal
+                            .draw(|f| {
+                                if current != names.len() {
+                                    draw_ui(f, &app, &names[current + 1..]);
+                                } else {
+                                    draw_ui(f, &app, &names[current..]);
+                                }
+                            })
+                            .unwrap();
+                        app.dirty = false;
+                    }
                 }
+                _ => {}
             }
         }
     }
