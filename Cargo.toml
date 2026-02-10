@@ -2,7 +2,7 @@
 opt-level = 3
 codegen-units=256
 lto = "thin"
-panic = "abort"
+panic = "unwind"
 strip = "symbols"
 
 [profile.dev]

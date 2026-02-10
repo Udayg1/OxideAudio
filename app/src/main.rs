@@ -12,7 +12,8 @@ use macros::*;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Spacing},
+    symbols::merge,
     widgets::{Block, Borders, Paragraph},
 };
 use ratatui::{
@@ -228,7 +229,7 @@ async fn get_songlink_data(id: &str, source: &str) -> Value {
 
 async fn convert_to_ytm(name: &str) -> Option<String> {
     let client = Client::builder()
-        .timeout(Duration::from_secs(5)) 
+        .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
 
@@ -335,7 +336,7 @@ async fn get_ytrecs(ytid: &str) -> Value {
         return empty_json();
     }
     let client = Client::builder()
-        .timeout(Duration::from_secs(5)) 
+        .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let body = ytrecs_json(ytid);
@@ -410,7 +411,14 @@ fn get_ytrec_array(recs: Value) -> Vec<Value> {
             .and_then(Value::as_array)
             .and_then(|v| v.get(0))
             .and_then(|v| v.get("text"));
-        let jso = json!({"id": id, "name": name});
+        let artist = i
+            .get("playlistPanelVideoRenderer")
+            .and_then(|v| v.get("shortBylineText"))
+            .and_then(|v| v.get("runs"))
+            .and_then(Value::as_array)
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("text"));
+        let jso = json!({"id": id, "name": name, "artist": artist});
         arr.push(jso);
     }
     arr
@@ -442,7 +450,7 @@ fn extract_tidal_id(json: &Value) -> Option<String> {
 
 async fn get_quality(id: &str) -> String {
     let cli = Client::builder()
-        .timeout(Duration::from_secs(5)) 
+        .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let res = cli
@@ -528,11 +536,17 @@ async fn add_song(
             );
             names.insert(
                 if cur == 0 { 0 } else { cur + 1 },
-                track
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Unknown")
-                    .to_string(),
+                concat_strings(Vec::from([
+                    track
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Unknown"),
+                    " - ",
+                    track
+                        .get("artist")
+                        .and_then(|v| v.get("name").and_then(Value::as_str))
+                        .unwrap_or("Unknown"),
+                ])),
             )
         } else {
             let pref = PREF_QUAL.get().unwrap();
@@ -551,11 +565,18 @@ async fn add_song(
                 urls.insert(if cur == 0 { 0 } else { cur + 1 }, decoded);
                 names.insert(
                     if cur == 0 { 0 } else { cur + 1 },
-                    track
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .unwrap_or("Unknown")
-                        .to_string(),
+                    concat_strings(Vec::from([
+                        track
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Unknown"),
+                        " - ",
+                        track
+                            .get("artist")
+                            .and_then(|v| v.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("Unknown"),
+                    ])),
                 );
             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                 if let Some(url) = json
@@ -567,11 +588,18 @@ async fn add_song(
                     urls.insert(if cur == 0 { 0 } else { cur + 1 }, url.to_string());
                     names.insert(
                         if cur == 0 { 0 } else { cur + 1 },
-                        track
-                            .get("title")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Unknown")
-                            .to_string(),
+                        concat_strings(Vec::from([
+                            track
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("Unknown"),
+                            " - ",
+                            track
+                                .get("artist")
+                                .and_then(|v| v.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("Unknown"),
+                        ])),
                     );
                 }
             }
@@ -615,6 +643,10 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     return;
                 }
                 let name = item.get("name").and_then(Value::as_str).unwrap();
+                let artist = item
+                    .get("artist")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Unknown");
                 let id = item.get("id").and_then(Value::as_str).unwrap();
                 let tidal_id = json.get(id).and_then(Value::as_str);
                 let tidal_id_final: String;
@@ -647,7 +679,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 "/.local/share/mscply/songs/",
                                 &tidal_id_final,
                             ])),
-                            name.to_string(),
+                            concat_strings(Vec::from([name, " - ", artist])),
                         ])))
                         .ok();
                         continue;
@@ -684,7 +716,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                         "/.local/share/mscply/songs/",
                                         &tidal_id_final,
                                     ])),
-                                    name.to_string(),
+                                    concat_strings(Vec::from([name, " - ", artist])),
                                 ])))
                                 .ok();
                             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
@@ -709,7 +741,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                             "/.local/share/mscply/songs/",
                                             &tidal_id_final,
                                         ])),
-                                        name.to_string(),
+                                        concat_strings(Vec::from([name, " - " ,artist])),
                                     ])))
                                     .ok();
                                 }
@@ -840,7 +872,7 @@ fn restore_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) {
     terminal.show_cursor().unwrap();
 }
 
-fn draw_ui(f: &mut ratatui::Frame, app: &App) {
+fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[String]) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -849,7 +881,9 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
             Constraint::Length(3),
         ])
         .split(f.area());
-
+    let [top_body, bottom_body] = Layout::vertical([Constraint::Fill(1); 2])
+        .spacing(Spacing::Overlap(1))
+        .areas(chunks[1]);
     let header = Paragraph::new("mscply — Tidal / YTM player")
         .block(Block::default().borders(Borders::ALL).title(""));
 
@@ -861,8 +895,23 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
         "\nQueue: ",
         &app.queue_len.to_string(),
     ])))
-    .block(Block::default().borders(Borders::ALL).title("Player"));
-
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Player")
+            .merge_borders(merge::MergeStrategy::Exact),
+    );
+    let mut playlst = String::new();
+    for i in playlist {
+        playlst += i;
+        playlst += "\n";
+    }
+    let body_playlist = Paragraph::new(playlst).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Up Next")
+            .merge_borders(merge::MergeStrategy::Exact),
+    );
     let footer = Paragraph::new(match app.mode {
         UiMode::Normal => "[a] Add  [p] Pause/Resume  [r] Back  [s] Skip  [f] seek forward  [b] seek backward  [h] Quit",
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
@@ -871,7 +920,8 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
     .block(Block::default().borders(Borders::ALL).title("Controls"));
 
     f.render_widget(header, chunks[0]);
-    f.render_widget(body, chunks[1]);
+    f.render_widget(body, top_body);
+    f.render_widget(body_playlist, bottom_body);
     f.render_widget(footer, chunks[2]);
     if matches!(app.mode, UiMode::Search | UiMode::Results) {
         let area = centered_rect(60, 60, f.area());
@@ -906,22 +956,19 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
                             .and_then(|v| v.get("tags"))
                             .and_then(Value::as_array);
                         let tag: &Vec<Value>;
-                        let mut qual: String = "".to_string();
+                        let mut qual = "";
                         if !tags.is_none() {
                             tag = tags.unwrap();
                             qual = if !tag.is_empty()
                                 && tag.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS"))
                             {
-                                "24 bit/192kHz".to_string()
+                                "24 bit/192kHz"
                             } else {
-                                t.get("audioQuality")
-                                    .and_then(Value::as_str)
-                                    .unwrap()
-                                    .to_string()
+                                t.get("audioQuality").and_then(Value::as_str).unwrap()
                             }
                         }
                         if qual == "LOSSLESS" {
-                            qual = "16 bit/44.1kHz".to_string()
+                            qual = "16 bit/44.1kHz"
                         }
                         ListItem::new(concat_strings(Vec::from([
                             prefix,
@@ -933,7 +980,7 @@ fn draw_ui(f: &mut ratatui::Frame, app: &App) {
                             ":",
                             &sec.to_string(),
                             ", ",
-                            &qual,
+                            qual,
                             ")",
                         ])))
                     })
@@ -1124,7 +1171,7 @@ async fn main() {
                         }
                     }
                     _ => {}
-                }
+                },
                 _ => {}
             }
         }
@@ -1136,7 +1183,15 @@ async fn main() {
             }
         }
         if app.dirty {
-            terminal.draw(|f| draw_ui(f, &app)).unwrap();
+            if current != names.len() {
+                terminal
+                    .draw(|f| draw_ui(f, &app, &names[current + 1..]))
+                    .unwrap();
+            } else {
+                terminal
+                    .draw(|f| draw_ui(f, &app, &names[current..]))
+                    .unwrap();
+            }
             app.dirty = false;
         }
         while let Ok(item) = rx.try_recv() {
