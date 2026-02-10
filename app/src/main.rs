@@ -1219,7 +1219,12 @@ async fn main() {
             app.dirty = true;
         }
         if crossterm::event::poll(time::Duration::from_millis(10)).unwrap() {
-            match crossterm::event::read().unwrap() {
+            let mut last_event = None;
+            while crossterm::event::poll(Duration::from_millis(0)).unwrap() {
+                last_event = Some(crossterm::event::read().unwrap());
+            }
+            match last_event.unwrap() {
+                Event::Mouse(_) => {}
                 Event::Key(key) => match app.mode {
                     UiMode::Normal => match key.code {
                         KeyCode::Char('h') => {
