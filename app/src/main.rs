@@ -704,7 +704,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 if *SAVE_DATA.get().unwrap_or(&true) {
                                     tx.send(QueueItem::Url(Vec::from([
                                         decoded.to_string(),
-                                        name.to_string(),
+                                        concat_strings(Vec::from([name, " - ", artist])),
                                     ])))
                                     .ok();
                                     continue;
@@ -729,7 +729,7 @@ fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     if *SAVE_DATA.get().unwrap_or(&true) {
                                         tx.send(QueueItem::Url(Vec::from([
                                             url.to_string(),
-                                            name.to_string(),
+                                            concat_strings(Vec::from([name, " - ", artist])),
                                         ])))
                                         .ok();
                                         continue;
