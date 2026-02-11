@@ -1,19 +1,16 @@
 [dependencies]
-reqwest = { version = "0.12", default-features = false,features = ["json", "rustls-tls"] }
 tokio = { version = "1", default-features = false, features = [
   "macros",
   "time",
   "rt-multi-thread"
 ]}
-base64 = "0.22"
 serde_json = "1"
 libmpv2 = "5.0.2"
-regex = { version = "1.12.2", default-features = false, features = ["std"] }
-ratatui = "0.30.0"
 crossterm = "0.29.0"
-uuid = { version = "1.0", features = ["v4"] }
 macros = { path = "../macros" }
-
+network = {path = "../network"}
+ui = {path = "../ui"}
+player = {path = "../player"}
 
 [package]
 name = "mscply"

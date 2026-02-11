@@ -12,7 +12,7 @@ codegen-units=256
 
 [workspace]
 resolver = "3"
-members = [
+members = ["ui",
     "app",
-    "macros",
+    "macros", "network", "player",
 ]
