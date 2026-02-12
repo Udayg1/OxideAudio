@@ -16,7 +16,7 @@ pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/2010010
 
 pub async fn get_quality(id: &str) -> String {
     let cli = Client::builder()
-        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let res = cli
@@ -63,7 +63,7 @@ pub fn set_url() {
     tokio::spawn(async {
         let js_url = "https://tidal.squid.wtf/_app/immutable/chunks/C_bfIKIg.js";
         let client = Client::builder()
-            .timeout(Duration::from_secs(5))
+            .connect_timeout(Duration::from_secs(5))
             .user_agent(AGENT)
             .build()
             .unwrap();
@@ -127,7 +127,7 @@ pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Er
         audio_quality,
     ]));
     let client = Client::builder()
-        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let body: Value = client
@@ -147,7 +147,7 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
         s.join("%20").as_str(),
     ]));
     let client = Client::builder()
-        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let body: Value = client
@@ -181,7 +181,7 @@ pub async fn get_songlink_data(id: &str, source: &str) -> Value {
 }
 pub async fn convert_to_ytm(name: &str) -> Option<String> {
     let client = Client::builder()
-        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
 
@@ -288,7 +288,7 @@ pub async fn get_ytrecs(ytid: &str) -> Value {
         return empty_json();
     }
     let client = Client::builder()
-        .timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let body = ytrecs_json(ytid);
