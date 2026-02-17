@@ -61,7 +61,7 @@ pub async fn get_quality(id: &str) -> String {
 
 pub fn set_url() {
     tokio::spawn(async {
-        let js_url = "https://tidal.squid.wtf/_app/immutable/chunks/C_bfIKIg.js";
+        let js_url = "https://tidal.squid.wtf/_app/immutable/chunks/DuHawVqQ.js";
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .user_agent(AGENT)

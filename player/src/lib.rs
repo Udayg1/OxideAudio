@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
+use std::time::{Duration, Instant};
 use std::{env, fs};
 use tokio;
 use uuid;
@@ -17,10 +18,53 @@ pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 pub static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 pub static SAVE_DATA: OnceLock<bool> = OnceLock::new();
 pub static IS_RUNNING: AtomicBool = AtomicBool::new(false);
+pub static CROSSFADE_DUR: f64 = 4.7;
 
 pub enum QueueItem {
     Url(Vec<String>),
     Mpd(Vec<String>),
+}
+
+pub fn crossfade(mpv1: &mut Mpv, mpv2: &mut Mpv, new_song: String) {
+    let cur_vol: f64 = mpv1.get_property("volume").unwrap();
+    mpv2.set_property("volume", 0.0).unwrap();
+
+    // Queue next track
+    if new_song.starts_with("<xml") {
+        queue_mpd_song(mpv2, &new_song);
+    } else {
+        queue_song(mpv2, &new_song);
+    }
+
+    let dur: f64 = mpv1.get_property("duration").unwrap();
+    let start_time = Instant::now();
+
+    while start_time.elapsed().as_secs_f64() < CROSSFADE_DUR {
+        let prog = mpv1.get_property::<f64>("time-pos");
+        if prog.is_err(){
+            break;
+        }
+        
+        let remaining = dur - prog.unwrap();
+
+        let progress = if remaining >= CROSSFADE_DUR {
+            0.0
+        } else {
+            1.0 - (remaining / CROSSFADE_DUR)
+        };
+
+        let vol1 = (1.0 - progress) * cur_vol;
+        let vol2 = progress * cur_vol; // or 100.0 if you want full next track
+
+        mpv1.set_property("volume", vol1).unwrap();
+        mpv2.set_property("volume", vol2).unwrap();
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Ensure volumes are correct at the end
+    mpv1.set_property("volume", 0.0).unwrap();
+    mpv2.set_property("volume", cur_vol).unwrap();
 }
 pub fn check_song(id: &str) -> bool {
     let path = concat_strings(Vec::from([

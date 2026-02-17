@@ -7,6 +7,7 @@ use macros::*;
 use network::*;
 use player::*;
 use serde_json::Value;
+use std::fs::OpenOptions;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -105,10 +106,10 @@ async fn main() {
     set_url();
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
-    // let log_file_location = concat_strings(Vec::from([
-    //     &env::var("HOME").unwrap(),
-    //     "/.local/share/mscply/mpv.log",
-    // ]));
+    let log_file_location = concat_strings(Vec::from([
+        &env::var("HOME").unwrap(),
+        "/.local/share/mscply/mpv.log",
+    ]));
     let mut mpv = match Mpv::with_initializer(|_init| {
         // init.set_option("msg-level", "all=trace").unwrap();
         Ok(())
@@ -119,6 +120,7 @@ async fn main() {
             return;
         }
     };
+    let mut mpv2 = Mpv::new().unwrap();
     mpv.set_property(
         "demuxer-lavf-o",
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
@@ -142,18 +144,48 @@ async fn main() {
     };
     mpv.observe_property("idle-active", Format::Flag, 2)
         .unwrap();
+    mpv.observe_property("time-pos", Format::Double, 3).unwrap();
+    mpv2.observe_property("time-pos", Format::Double, 3)
+        .unwrap();
+    mpv.observe_property("duration", Format::Double, 1).unwrap();
+    mpv2.observe_property("duration", Format::Double, 1)
+        .unwrap();
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
     let skip_every = Duration::from_millis(800);
-    let mut auto_started = false;
-    let mut skipped = false;
+    let mut _auto_started = false;
+    let mut _skipped = false;
     let mut last = terminal.size().unwrap();
-    // let mut logfile = OpenOptions::new()
-    //     .read(true)
-    //     .write(true)
-    //     .create(true)
-    //     .open(log_file_location)
-    //     .unwrap();
+    let mut _logfile = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(log_file_location)
+        .unwrap();
+    let mut player_num = 1;
+    let mut dura = 0.0;
+    let mut tim = 0.0;
     loop {
+        if (!mpv.get_property::<bool>("idle-active").unwrap()
+            || !mpv2.get_property::<bool>("idle-active").unwrap())
+            && dura != 0.0
+            && dura - tim < CROSSFADE_DUR && current + 1 < urls.len()
+        {
+            if player_num == 1 {
+                crossfade(&mut mpv, &mut mpv2, urls[current + 1].clone());
+                player_num = 2;
+                dura = mpv2.get_property("duration").unwrap();
+                tim =  mpv2.get_property("time-pos").unwrap();
+            } else if player_num == 2 {
+                crossfade(&mut mpv2, &mut mpv, urls[current + 1].clone());
+                player_num = 1;
+                dura = mpv.get_property("duration").unwrap();
+                tim =  mpv.get_property("time-pos").unwrap();
+            }
+            current += 1;
+            app.status = concat_strings(Vec::from(["Playing ", &names[current]]));
+            app.queue_len = (urls.len() - current - 1) as i64;
+            app.dirty = true;
+        }
         if SHUTDOWN.load(Ordering::SeqCst) {
             break;
         }
@@ -162,47 +194,65 @@ async fn main() {
                 spawn_recommendation_worker(names.last().unwrap().to_string(), tx.clone());
             }
         }
-        if let Some(event) = mpv.wait_event(0.0) {
-            match event {
-                Ok(e) => match e {
-                    // eve::LogMessage {
-                    //     prefix: _,
-                    //     level: _,
-                    //     text,
-                    //     log_level: _,
-                    // } => {
-                    //     logfile.write_all(text.as_bytes()).unwrap();
-                    // }
-                    eve::EndFile(_) => {
-                        if !skipped && !auto_started {
-                            auto_started = true;
-                            advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+        if player_num == 1 {
+            if let Some(event) = mpv.wait_event(0.05) {
+                match event {
+                    Ok(e) => match e {
+                        eve::PropertyChange {
+                            change: PropertyData::Double(f),
+                            reply_userdata: 1,
+                            ..
+                        } => {
+                            dura = f;
                         }
-                        skipped = false;
-                    }
-
-                    eve::PropertyChange {
-                        reply_userdata: 2,
-                        change,
-                        ..
-                    } => {
-                        if let PropertyData::Flag(true) = change {
-                            if !auto_started && current < urls.len() && !urls.is_empty() {
-                                auto_started = true;
-                                advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
-                            }
+                        eve::PropertyChange {
+                            change: PropertyData::Double(f),
+                            reply_userdata: 3,
+                            ..
+                        } => {
+                            tim = f;
                         }
-                    }
+                        _ => {}
+                    },
                     _ => {}
-                },
-                _ => {}
+                }
+            }
+        } else if player_num == 2 {
+            if let Some(event) = mpv2.wait_event(0.05) {
+                match event {
+                    Ok(e) => match e {
+                        eve::PropertyChange {
+                            change: PropertyData::Double(f),
+                            reply_userdata: 1,
+                            ..
+                        } => {
+                            dura = f;
+                        }
+                        eve::PropertyChange {
+                            change: PropertyData::Double(f),
+                            reply_userdata: 3,
+                            ..
+                        } => {
+                            tim = f;
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
             }
         }
-        if mpv.get_property::<bool>("idle-active").unwrap() && urls.len() >= current + 1 {
+        if mpv.get_property::<bool>("idle-active").unwrap()
+            && mpv2.get_property::<bool>("idle-active").unwrap()
+            && urls.len() >= current + 1
+        {
             if last_mode_switch.elapsed() >= skip_every {
-                advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                if player_num == 1 {
+                    advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                } else if player_num == 2 {
+                    advance_playback(&mut mpv2, &urls, &names, &mut current, &mut app);
+                }
                 last_mode_switch = Instant::now();
-                auto_started = true;
+                _auto_started = true;
             }
         }
         if app.dirty {
@@ -260,12 +310,44 @@ async fn main() {
                                 }
                             }
                             KeyCode::Char('r') => {
-                                skipped = true;
-                                rewind_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                                _skipped = true;
+                                if player_num == 1 {
+                                    rewind_playback(
+                                        &mut mpv,
+                                        &urls,
+                                        &names,
+                                        &mut current,
+                                        &mut app,
+                                    );
+                                } else if player_num == 2 {
+                                    rewind_playback(
+                                        &mut mpv2,
+                                        &urls,
+                                        &names,
+                                        &mut current,
+                                        &mut app,
+                                    );
+                                }
                             }
                             KeyCode::Char('s') => {
-                                skipped = true;
-                                advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                                _skipped = true;
+                                if player_num == 1 {
+                                    advance_playback(
+                                        &mut mpv,
+                                        &urls,
+                                        &names,
+                                        &mut current,
+                                        &mut app,
+                                    );
+                                } else if player_num == 2 {
+                                    advance_playback(
+                                        &mut mpv2,
+                                        &urls,
+                                        &names,
+                                        &mut current,
+                                        &mut app,
+                                    );
+                                }
                             }
                             KeyCode::Char('a') => {
                                 app.dirty = true;
@@ -273,18 +355,36 @@ async fn main() {
                                 app.mode = UiMode::Search;
                             }
                             KeyCode::Char('f') => {
-                                if !mpv.get_property::<bool>("idle-active").unwrap() {
-                                    match mpv.command("seek", &["5", "relative"]) {
-                                        Ok(()) => {}
-                                        _ => {}
+                                if !mpv.get_property::<bool>("idle-active").unwrap()
+                                    || !mpv2.get_property::<bool>("idle-active").unwrap()
+                                {
+                                    if player_num == 1 {
+                                        match mpv.command("seek", &["5", "relative"]) {
+                                            Ok(()) => {}
+                                            _ => {}
+                                        }
+                                    } else if player_num == 2 {
+                                        match mpv2.command("seek", &["5", "relative"]) {
+                                            Ok(()) => {}
+                                            _ => {}
+                                        }
                                     }
                                 }
                             }
                             KeyCode::Char('b') => {
-                                if !mpv.get_property::<bool>("idle-active").unwrap() {
-                                    match mpv.command("seek", &["-5", "relative"]) {
-                                        Ok(()) => {}
-                                        _ => {}
+                                if !mpv.get_property::<bool>("idle-active").unwrap()
+                                    || !mpv2.get_property::<bool>("idle-active").unwrap()
+                                {
+                                    if player_num == 1 {
+                                        match mpv.command("seek", &["-5", "relative"]) {
+                                            Ok(()) => {}
+                                            _ => {}
+                                        }
+                                    } else if player_num == 2 {
+                                        match mpv2.command("seek", &["-5", "relative"]) {
+                                            Ok(()) => {}
+                                            _ => {}
+                                        }
                                     }
                                 }
                             }
