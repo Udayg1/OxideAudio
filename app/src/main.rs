@@ -172,6 +172,7 @@ async fn main() {
     mpv2.observe_property("duration", Format::Double, 1)
         .unwrap();
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
+    let mut last_add;
     let skip_every = Duration::from_millis(800);
     let mut _auto_started = false;
     let mut _skipped = false;
@@ -186,17 +187,33 @@ async fn main() {
     let mut dura = 0.0;
     let mut tim = 0.0;
     loop {
+        last_add = 0;
         if (!mpv.get_property::<bool>("idle-active").unwrap()
             || !mpv2.get_property::<bool>("idle-active").unwrap())
             && dura != 0.0
             && dura - tim < CROSSFADE_DUR
             && current + 1 < urls.len()
         {
+            current += 1;
+            app.status = concat_strings(Vec::from([
+                "Playing ",
+                urls[current].get("name").and_then(Value::as_str).unwrap(),
+            ]));
+            app.queue_len = (urls.len() - current - 1) as i64;
+            if current != urls.len() {
+                terminal
+                    .draw(|f| draw_ui(f, &app, &urls[current + 1..]))
+                    .unwrap();
+            } else {
+                terminal
+                    .draw(|f| draw_ui(f, &app, &urls[current..]))
+                    .unwrap();
+            }
             if player_num == 1 {
                 crossfade(
                     &mut mpv,
                     &mut mpv2,
-                    urls[current + 1]
+                    urls[current]
                         .get("url")
                         .and_then(Value::as_str)
                         .unwrap()
@@ -209,7 +226,7 @@ async fn main() {
                 crossfade(
                     &mut mpv2,
                     &mut mpv,
-                    urls[current + 1]
+                    urls[current]
                         .get("url")
                         .and_then(Value::as_str)
                         .unwrap()
@@ -219,14 +236,9 @@ async fn main() {
                 dura = mpv.get_property("duration").unwrap();
                 tim = mpv.get_property("time-pos").unwrap();
             }
-            current += 1;
-            app.status = concat_strings(Vec::from([
-                "Playing ",
-                urls[current].get("name").and_then(Value::as_str).unwrap(),
-            ]));
-            app.queue_len = (urls.len() - current - 1) as i64;
-            app.dirty = true;
+            while crossterm::event::poll(Duration::from_millis(0)).unwrap() {}
         }
+
         if SHUTDOWN.load(Ordering::SeqCst) {
             break;
         }
@@ -317,6 +329,19 @@ async fn main() {
                 _auto_started = true;
             }
         }
+        while let Ok(item) = rx.try_recv() {
+            match item {
+                QueueItem::Url(url) => {
+                    urls.push(url);
+                    last_add += 1;
+                    app.queue_len += 1;
+                }
+            }
+            app.dirty = true;
+            if last_add > 5 {
+                break;
+            }
+        }
         if app.dirty {
             if current != urls.len() {
                 terminal
@@ -328,12 +353,6 @@ async fn main() {
                     .unwrap();
             }
             app.dirty = false;
-        }
-        while let Ok(item) = rx.try_recv() {
-            match item {
-                QueueItem::Url(url) => urls.push(url),
-            }
-            app.dirty = true;
         }
         if crossterm::event::poll(time::Duration::from_millis(10)).unwrap() {
             while crossterm::event::poll(Duration::from_millis(0)).unwrap() {
@@ -365,6 +384,7 @@ async fn main() {
                                 } else if player_num == 2 {
                                     rewind_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
+                                app.dirty = true;
                             }
                             KeyCode::Char('s') => {
                                 _skipped = true;
@@ -373,6 +393,7 @@ async fn main() {
                                 } else if player_num == 2 {
                                     advance_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
+                                app.dirty = true;
                             }
                             KeyCode::Char('a') => {
                                 app.dirty = true;
