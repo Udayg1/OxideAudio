@@ -106,9 +106,9 @@ pub async fn cache_next_song(url: &str) -> String {
         handle.write_all(&bytes).unwrap();
         path
     } else {
-        if fs::metadata(&path).is_ok() {
-            return path;
-        }
+        // if fs::metadata(&path).is_ok() {
+        //     return path;
+        // }
         // eprintln!("{}/ -- {url}", env::temp_dir().display());
         let bytes = cli.get(url).send().await.unwrap().bytes().await;
         fs::write(&path, bytes.unwrap()).ok();

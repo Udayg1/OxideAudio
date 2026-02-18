@@ -239,7 +239,7 @@ async fn main() {
             }
         }
         if urls.len() > current + 1{
-            if !check_song(urls[current+1].get("id").and_then(Value::as_str).unwrap()) && !urls[current+1].get("url").and_then(Value::as_str).unwrap().starts_with("/tmp/"){
+            if !check_song(urls[current+1].get("id").and_then(Value::as_str).unwrap()) && !urls[current+1].get("url").and_then(Value::as_str).unwrap().starts_with("/"){
                 if save{
                     urls[current+1]["url"]   = json!(cache_next_song(urls[current+1].get("url").and_then(Value::as_str).unwrap()).await);
                 }
