@@ -6,7 +6,7 @@ use libmpv2::{
 use macros::*;
 use network::*;
 use player::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs::OpenOptions;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -15,13 +15,7 @@ use std::{env, fs};
 use tokio::time;
 use ui::*;
 
-fn advance_playback(
-    mpv: &mut Mpv,
-    urls: &[String],
-    names: &[String],
-    current: &mut usize,
-    app: &mut App,
-) {
+fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut App) {
     if *current + 1 >= urls.len() {
         app.status = "Nothing is playing".to_string();
         app.queue_len = 0;
@@ -35,31 +29,59 @@ fn advance_playback(
 
     *current += 1;
     app.queue_len = (urls.len() - *current - 1) as i64;
-    app.status = concat_strings(Vec::from(["Playing ", &names[*current]]));
+    app.status = concat_strings(Vec::from([
+        "Playing ",
+        urls[*current].get("name").and_then(Value::as_str).unwrap(),
+    ]));
 
-    if urls[*current].starts_with("<?xml") {
-        queue_mpd_song(mpv, &urls[*current]);
+    if urls[*current]
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap()
+        .starts_with("<?xml")
+    {
+        queue_mpd_song(
+            mpv,
+            urls[*current].get("url").and_then(Value::as_str).unwrap(),
+        );
     } else {
-        queue_song(mpv, &urls[*current]);
+        queue_song(
+            mpv,
+            urls[*current].get("url").and_then(Value::as_str).unwrap(),
+        );
     }
 
     app.dirty = true;
 }
-fn rewind_playback(
-    mpv: &mut Mpv,
-    urls: &[String],
-    names: &[String],
-    current: &mut usize,
-    app: &mut App,
-) {
+fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut App) {
     if *current > 0 && urls.len() > 0 {
-        if urls[*current - 1].starts_with("<xml") {
-            queue_mpd_song(mpv, &urls[*current - 1]);
+        if urls[*current - 1]
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap()
+            .starts_with("<?xml")
+        {
+            queue_mpd_song(
+                mpv,
+                urls[*current - 1]
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap(),
+            );
         } else {
-            queue_song(mpv, &urls[*current - 1]);
+            queue_song(
+                mpv,
+                urls[*current - 1]
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap(),
+            );
         }
         *current -= 1;
-        app.status = concat_strings(Vec::from(["Playing ", &names[*current]]));
+        app.status = concat_strings(Vec::from([
+            "Playing ",
+            &urls[*current].get("name").and_then(Value::as_str).unwrap(),
+        ]));
         app.queue_len = (urls.len() - *current - 1) as i64;
         app.dirty = true;
     }
@@ -129,8 +151,7 @@ async fn main() {
     // mpv.set_property("msg-level", "all=debug").unwrap();
     // mpv.set_property("log-file", log_file_location.to_string()).unwrap();
     let mut terminal = setup_terminal();
-    let mut names: Vec<String> = Vec::new();
-    let mut urls: Vec<String> = Vec::new();
+    let mut urls: Vec<Value> = Vec::new();
     let mut current = 0;
     let mut app = App {
         status: "Nothing is playing".into(),
@@ -168,30 +189,60 @@ async fn main() {
         if (!mpv.get_property::<bool>("idle-active").unwrap()
             || !mpv2.get_property::<bool>("idle-active").unwrap())
             && dura != 0.0
-            && dura - tim < CROSSFADE_DUR && current + 1 < urls.len()
+            && dura - tim < CROSSFADE_DUR
+            && current + 1 < urls.len()
         {
             if player_num == 1 {
-                crossfade(&mut mpv, &mut mpv2, urls[current + 1].clone());
+                crossfade(
+                    &mut mpv,
+                    &mut mpv2,
+                    urls[current + 1]
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .unwrap()
+                        .to_string(),
+                );
                 player_num = 2;
                 dura = mpv2.get_property("duration").unwrap();
-                tim =  mpv2.get_property("time-pos").unwrap();
+                tim = mpv2.get_property("time-pos").unwrap();
             } else if player_num == 2 {
-                crossfade(&mut mpv2, &mut mpv, urls[current + 1].clone());
+                crossfade(
+                    &mut mpv2,
+                    &mut mpv,
+                    urls[current + 1]
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .unwrap()
+                        .to_string(),
+                );
                 player_num = 1;
                 dura = mpv.get_property("duration").unwrap();
-                tim =  mpv.get_property("time-pos").unwrap();
+                tim = mpv.get_property("time-pos").unwrap();
             }
             current += 1;
-            app.status = concat_strings(Vec::from(["Playing ", &names[current]]));
+            app.status = concat_strings(Vec::from([
+                "Playing ",
+                urls[current]
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap(),
+            ]));
             app.queue_len = (urls.len() - current - 1) as i64;
             app.dirty = true;
         }
         if SHUTDOWN.load(Ordering::SeqCst) {
             break;
         }
-        if !IS_RUNNING.load(Ordering::SeqCst) && current + 1 == names.len() {
-            if names.len() > 1 {
-                spawn_recommendation_worker(names.last().unwrap().to_string(), tx.clone());
+        if !IS_RUNNING.load(Ordering::SeqCst) && current + 1 == urls.len() {
+            if urls.len() > 1 {
+                spawn_recommendation_worker(urls.last().unwrap().to_string(), tx.clone());
+            }
+        }
+        if urls.len() > current + 1{
+            if !check_song(urls[current+1].get("id").and_then(Value::as_str).unwrap()) && !urls[current+1].get("url").and_then(Value::as_str).unwrap().starts_with("/tmp/"){
+                if save{
+                    urls[current+1]["url"]   = json!(cache_next_song(urls[current+1].get("url").and_then(Value::as_str).unwrap()).await);
+                }
             }
         }
         if player_num == 1 {
@@ -247,42 +298,29 @@ async fn main() {
         {
             if last_mode_switch.elapsed() >= skip_every {
                 if player_num == 1 {
-                    advance_playback(&mut mpv, &urls, &names, &mut current, &mut app);
+                    advance_playback(&mut mpv, &urls, &mut current, &mut app);
                 } else if player_num == 2 {
-                    advance_playback(&mut mpv2, &urls, &names, &mut current, &mut app);
+                    advance_playback(&mut mpv2, &urls, &mut current, &mut app);
                 }
                 last_mode_switch = Instant::now();
                 _auto_started = true;
             }
         }
         if app.dirty {
-            if current != names.len() {
+            if current != urls.len() {
                 terminal
-                    .draw(|f| draw_ui(f, &app, &names[current + 1..]))
+                    .draw(|f| draw_ui(f, &app, &urls[current + 1..]))
                     .unwrap();
             } else {
                 terminal
-                    .draw(|f| draw_ui(f, &app, &names[current..]))
+                    .draw(|f| draw_ui(f, &app, &urls[current..]))
                     .unwrap();
             }
             app.dirty = false;
         }
         while let Ok(item) = rx.try_recv() {
             match item {
-                QueueItem::Url(url) => {
-                    if !names.contains(&url[1]) {
-                        urls.push(url[0].clone());
-                        names.push(url[1].clone());
-                        app.queue_len += 1;
-                    }
-                }
-                QueueItem::Mpd(mpd) => {
-                    if !names.contains(&mpd[1]) {
-                        urls.push(mpd[0].clone());
-                        names.push(mpd[1].clone());
-                        app.queue_len += 1;
-                    }
-                }
+                QueueItem::Url(url) => urls.push(url),
             }
             app.dirty = true;
         }
@@ -312,41 +350,17 @@ async fn main() {
                             KeyCode::Char('r') => {
                                 _skipped = true;
                                 if player_num == 1 {
-                                    rewind_playback(
-                                        &mut mpv,
-                                        &urls,
-                                        &names,
-                                        &mut current,
-                                        &mut app,
-                                    );
+                                    rewind_playback(&mut mpv, &urls, &mut current, &mut app);
                                 } else if player_num == 2 {
-                                    rewind_playback(
-                                        &mut mpv2,
-                                        &urls,
-                                        &names,
-                                        &mut current,
-                                        &mut app,
-                                    );
+                                    rewind_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
                             }
                             KeyCode::Char('s') => {
                                 _skipped = true;
                                 if player_num == 1 {
-                                    advance_playback(
-                                        &mut mpv,
-                                        &urls,
-                                        &names,
-                                        &mut current,
-                                        &mut app,
-                                    );
+                                    advance_playback(&mut mpv, &urls, &mut current, &mut app);
                                 } else if player_num == 2 {
-                                    advance_playback(
-                                        &mut mpv2,
-                                        &urls,
-                                        &names,
-                                        &mut current,
-                                        &mut app,
-                                    );
+                                    advance_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
                             }
                             KeyCode::Char('a') => {
@@ -460,7 +474,6 @@ async fn main() {
                             KeyCode::Enter => {
                                 let index = (app.selected + 1).to_string();
                                 add_song(
-                                    &mut names,
                                     &mut urls,
                                     current,
                                     &app.search_results,
@@ -475,12 +488,31 @@ async fn main() {
                                     if current != 0 {
                                         current += 1;
                                     }
-                                    app.status =
-                                        concat_strings(Vec::from(["Playing ", &names[current]]));
-                                    if urls[current].starts_with("<?xml") {
-                                        queue_mpd_song(&mut mpv, &urls[current]);
+                                    app.status = concat_strings(Vec::from([
+                                        "Playing ",
+                                        &urls[current].get("name").and_then(Value::as_str).unwrap(),
+                                    ]));
+                                    if urls[current]
+                                        .get("url")
+                                        .and_then(Value::as_str)
+                                        .unwrap()
+                                        .starts_with("<?xml")
+                                    {
+                                        queue_mpd_song(
+                                            &mut mpv,
+                                            &urls[current]
+                                                .get("url")
+                                                .and_then(Value::as_str)
+                                                .unwrap(),
+                                        );
                                     } else {
-                                        queue_song(&mut mpv, &urls[current]);
+                                        queue_song(
+                                            &mut mpv,
+                                            &urls[current]
+                                                .get("url")
+                                                .and_then(Value::as_str)
+                                                .unwrap(),
+                                        );
                                     }
                                 }
                                 app.mode = UiMode::Normal;
@@ -496,10 +528,10 @@ async fn main() {
 
                             terminal
                                 .draw(|f| {
-                                    if current != names.len() {
-                                        draw_ui(f, &app, &names[current + 1..]);
+                                    if current != urls.len() {
+                                        draw_ui(f, &app, &urls[current + 1..]);
                                     } else {
-                                        draw_ui(f, &app, &names[current..]);
+                                        draw_ui(f, &app, &urls[current..]);
                                     }
                                 })
                                 .unwrap();

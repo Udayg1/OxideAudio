@@ -2,7 +2,7 @@ use base64::{Engine as _, engine::general_purpose};
 use libmpv2::Mpv;
 use macros::*;
 use network::*;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::io::{Write, stderr};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -18,33 +18,30 @@ pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 pub static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 pub static SAVE_DATA: OnceLock<bool> = OnceLock::new();
 pub static IS_RUNNING: AtomicBool = AtomicBool::new(false);
-pub static CROSSFADE_DUR: f64 = 4.7;
+pub static CROSSFADE_DUR: f64 = 5.5;
 
 pub enum QueueItem {
-    Url(Vec<String>),
-    Mpd(Vec<String>),
+    Url(Value),
 }
 
 pub fn crossfade(mpv1: &mut Mpv, mpv2: &mut Mpv, new_song: String) {
     let cur_vol: f64 = mpv1.get_property("volume").unwrap();
     mpv2.set_property("volume", 0.0).unwrap();
-
-    // Queue next track
-    if new_song.starts_with("<xml") {
+    if new_song.starts_with("<?xml") {
         queue_mpd_song(mpv2, &new_song);
     } else {
         queue_song(mpv2, &new_song);
     }
-
+    
     let dur: f64 = mpv1.get_property("duration").unwrap();
     let start_time = Instant::now();
 
     while start_time.elapsed().as_secs_f64() < CROSSFADE_DUR {
         let prog = mpv1.get_property::<f64>("time-pos");
-        if prog.is_err(){
+        if prog.is_err() {
             break;
         }
-        
+
         let remaining = dur - prog.unwrap();
 
         let progress = if remaining >= CROSSFADE_DUR {
@@ -66,6 +63,7 @@ pub fn crossfade(mpv1: &mut Mpv, mpv2: &mut Mpv, new_song: String) {
     mpv1.set_property("volume", 0.0).unwrap();
     mpv2.set_property("volume", cur_vol).unwrap();
 }
+
 pub fn check_song(id: &str) -> bool {
     let path = concat_strings(Vec::from([
         &env::var("HOME").unwrap(),
@@ -155,14 +153,14 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     }
                     let cached = check_song(&tidal_id_final);
                     if cached {
-                        tx.send(QueueItem::Url(Vec::from([
+                        tx.send(QueueItem::Url(json!({"url":
                             concat_strings(Vec::from([
                                 &env::var("HOME").unwrap(),
                                 "/.local/share/mscply/songs/",
                                 &tidal_id_final,
-                            ])),
-                            concat_strings(Vec::from([name, " - ", artist])),
-                        ])))
+                            ])), "name":
+                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final})
+                        ))
                         .ok();
                         continue;
                     }
@@ -184,22 +182,20 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                             let decoded = decode_base64(manifest.unwrap());
                             if decoded.starts_with("<?xml") {
                                 if *SAVE_DATA.get().unwrap_or(&true) {
-                                    tx.send(QueueItem::Url(Vec::from([
-                                        decoded.to_string(),
-                                        concat_strings(Vec::from([name, " - ", artist])),
-                                    ])))
+                                    tx.send(QueueItem::Url(json!({"url":
+                                        decoded.to_string(), "name":
+                                        concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
                                     .ok();
                                     continue;
                                 }
                                 cache_mpd_song(&decoded, &tidal_id_final).await;
-                                tx.send(QueueItem::Mpd(Vec::from([
-                                    concat_strings(Vec::from([
-                                        &env::var("HOME").unwrap(),
-                                        "/.local/share/mscply/songs/",
-                                        &tidal_id_final,
-                                    ])),
-                                    concat_strings(Vec::from([name, " - ", artist])),
-                                ])))
+                                tx.send(QueueItem::Url(json!({"url":
+                                                            concat_strings(Vec::from([
+                                                                &env::var("HOME").unwrap(),
+                                                                "/.local/share/mscply/songs/",
+                                                                &tidal_id_final,
+                                                            ])), "name":
+                                                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
                                 .ok();
                             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                                 if let Some(url) = json
@@ -209,22 +205,20 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     .and_then(Value::as_str)
                                 {
                                     if *SAVE_DATA.get().unwrap_or(&true) {
-                                        tx.send(QueueItem::Url(Vec::from([
-                                            url.to_string(),
-                                            concat_strings(Vec::from([name, " - ", artist])),
-                                        ])))
+                                        tx.send(QueueItem::Url(json!({"url":
+                                            url.to_string(), "name":
+                                                                    concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
                                         .ok();
                                         continue;
                                     }
                                     cache_url(&tidal_id_final, url).await;
-                                    tx.send(QueueItem::Url(Vec::from([
-                                        concat_strings(Vec::from([
-                                            &env::var("HOME").unwrap(),
-                                            "/.local/share/mscply/songs/",
-                                            &tidal_id_final,
-                                        ])),
-                                        concat_strings(Vec::from([name, " - ", artist])),
-                                    ])))
+                                    tx.send(QueueItem::Url(json!({"url":
+                                                                concat_strings(Vec::from([
+                                                                    &env::var("HOME").unwrap(),
+                                                                    "/.local/share/mscply/songs/",
+                                                                    &tidal_id_final,
+                                                                ])), "name":
+                                                                concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
                                     .ok();
                                 }
                             }
@@ -276,8 +270,7 @@ fn decode_base64(encoded: &str) -> String {
     return String::from_utf8(decoded).unwrap();
 }
 pub async fn add_song(
-    names: &mut Vec<String>,
-    urls: &mut Vec<String>,
+    urls: &mut Vec<Value>,
     cur: usize,
     items: &Vec<Value>,
     index: String,
@@ -310,15 +303,11 @@ pub async fn add_song(
         if cached {
             urls.insert(
                 if cur == 0 { 0 } else { cur + 1 },
-                concat_strings(Vec::from([
+                json!({"url": concat_strings(Vec::from([
                     &env::var("HOME").unwrap(),
                     "/.local/share/mscply/songs/",
                     &id.to_string(),
-                ])),
-            );
-            names.insert(
-                if cur == 0 { 0 } else { cur + 1 },
-                concat_strings(Vec::from([
+                ])), "name":concat_strings(Vec::from([
                     track
                         .get("title")
                         .and_then(Value::as_str)
@@ -328,8 +317,8 @@ pub async fn add_song(
                         .get("artist")
                         .and_then(|v| v.get("name").and_then(Value::as_str))
                         .unwrap_or("Unknown"),
-                ])),
-            )
+                ])), "id": id.to_string()}),
+            );
         } else {
             let pref = PREF_QUAL.get().unwrap();
             if (audio_quality == "LOSSLESS" || audio_quality == "HI_RES_LOSSLESS")
@@ -344,21 +333,19 @@ pub async fn add_song(
                 .and_then(Value::as_str);
             let decoded = decode_base64(manifest.unwrap());
             if decoded.starts_with("<?xml") {
-                urls.insert(if cur == 0 { 0 } else { cur + 1 }, decoded);
-                names.insert(
+                urls.insert(
                     if cur == 0 { 0 } else { cur + 1 },
-                    concat_strings(Vec::from([
-                        track
-                            .get("title")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Unknown"),
-                        " - ",
-                        track
-                            .get("artist")
-                            .and_then(|v| v.get("name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("Unknown"),
-                    ])),
+                    json!({"url": decoded, "name":concat_strings(Vec::from([
+                    track
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Unknown"),
+                    " - ",
+                    track
+                        .get("artist")
+                        .and_then(|v| v.get("name").and_then(Value::as_str))
+                        .unwrap_or("Unknown"),
+                ])), "id": id.to_string()}),
                 );
             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                 if let Some(url) = json
@@ -367,21 +354,19 @@ pub async fn add_song(
                     .and_then(|a| a.first())
                     .and_then(Value::as_str)
                 {
-                    urls.insert(if cur == 0 { 0 } else { cur + 1 }, url.to_string());
-                    names.insert(
+                    urls.insert(
                         if cur == 0 { 0 } else { cur + 1 },
-                        concat_strings(Vec::from([
-                            track
-                                .get("title")
-                                .and_then(Value::as_str)
-                                .unwrap_or("Unknown"),
-                            " - ",
-                            track
-                                .get("artist")
-                                .and_then(|v| v.get("name"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("Unknown"),
-                        ])),
+                        json!({"url": url.to_string(), "name":concat_strings(Vec::from([
+                        track
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Unknown"),
+                        " - ",
+                        track
+                            .get("artist")
+                            .and_then(|v| v.get("name").and_then(Value::as_str))
+                            .unwrap_or("Unknown"),
+                    ])), "id": id.to_string()}),
                     );
                 }
             }

@@ -46,7 +46,7 @@ pub fn restore_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) {
     terminal.show_cursor().unwrap();
 }
 
-pub fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[String]) {
+pub fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[Value]) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -84,7 +84,13 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[String]) {
             .title("Player")
             .merge_borders(merge::MergeStrategy::Exact),
     );
-    let playlst = playlist.join("\n");
+    let mut playlst = String::new();
+    for i in playlist{
+        let name = i.get("name").and_then(Value::as_str).unwrap();
+        playlst += name;
+        playlst += "\n";
+    }
+    playlst = playlst.trim().to_string();
     let body_playlist = Paragraph::new(playlst).block(
         Block::default()
             .borders(Borders::ALL)

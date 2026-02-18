@@ -7,6 +7,7 @@ use std::io::Write;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::{env, fs};
+use uuid;
 
 pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
 pub static QUERYBASE: OnceLock<String> = OnceLock::new();
@@ -56,6 +57,62 @@ pub async fn get_quality(id: &str) -> String {
         quality.to_string()
     } else {
         "".to_string()
+    }
+}
+
+pub async fn cache_next_song(url: &str) -> String {
+    let cli = Client::new();
+    let path = concat_strings(Vec::from([
+        env::temp_dir().to_str().unwrap(),
+        "/",
+        &uuid::Uuid::new_v4().to_string(),
+    ]));
+    if url.starts_with("<?xml") {
+        let new: Vec<&str> = url.split(" ").collect();
+        let mut init: String = "--".to_string();
+        let mut r = "--";
+        for i in new {
+            if i.starts_with("media=") {
+                init = i[7..i.len() - 1].to_string();
+            } else if i.starts_with("r=") {
+                let smth = i.split("/").collect::<Vec<&str>>()[0];
+                r = &smth[3..smth.len() - 1];
+            }
+        }
+        init = init.replace("amp;", "");
+        let new_init = init.split("$Number$").collect::<Vec<&str>>();
+        let r = r.parse::<u32>().unwrap();
+        let mut bytes: Vec<u8> = Vec::new();
+        for i in 0..=r + 2 {
+            let resp = cli
+                .get(concat_strings(Vec::from([
+                    new_init[0],
+                    &i.to_string(),
+                    new_init[1],
+                ])))
+                .send()
+                .await;
+            if resp.is_err() {
+                return "".to_string();
+            }
+            let chunk = resp.unwrap().bytes().await.unwrap();
+            bytes.extend_from_slice(&chunk);
+        }
+        let mut handle = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(&path)
+            .unwrap();
+        handle.write_all(&bytes).unwrap();
+        path
+    } else {
+        if fs::metadata(&path).is_ok() {
+            return path;
+        }
+        // eprintln!("{}/ -- {url}", env::temp_dir().display());
+        let bytes = cli.get(url).send().await.unwrap().bytes().await;
+        fs::write(&path, bytes.unwrap()).ok();
+        path
     }
 }
 
