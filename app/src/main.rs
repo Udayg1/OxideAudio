@@ -236,7 +236,10 @@ async fn main() {
                 dura = mpv.get_property("duration").unwrap();
                 tim = mpv.get_property("time-pos").unwrap();
             }
-            while crossterm::event::poll(Duration::from_millis(0)).unwrap() {}
+            while crossterm::event::poll(Duration::from_millis(0)).unwrap() && last_add < 5 {
+                last_add += 1;
+                let _ = crossterm::event::read();
+            }
         }
 
         if SHUTDOWN.load(Ordering::SeqCst) {
@@ -368,11 +371,19 @@ async fn main() {
                             }
                             KeyCode::Char('p') => {
                                 if !app.paused {
-                                    mpv.set_property("pause", true).unwrap();
+                                    if player_num == 1 {
+                                        mpv.set_property("pause", true).unwrap();
+                                    } else {
+                                        mpv2.set_property("pause", true).unwrap();
+                                    }
                                     app.paused = true;
                                     app.dirty = true;
                                 } else if app.paused {
-                                    mpv.set_property("pause", false).unwrap();
+                                    if player_num == 1 {
+                                        mpv.set_property("pause", false).unwrap();
+                                    } else {
+                                        mpv2.set_property("pause", false).unwrap();
+                                    }
                                     app.paused = false;
                                     app.dirty = true;
                                 }
