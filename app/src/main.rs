@@ -222,10 +222,7 @@ async fn main() {
             current += 1;
             app.status = concat_strings(Vec::from([
                 "Playing ",
-                urls[current]
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap(),
+                urls[current].get("name").and_then(Value::as_str).unwrap(),
             ]));
             app.queue_len = (urls.len() - current - 1) as i64;
             app.dirty = true;
@@ -238,10 +235,24 @@ async fn main() {
                 spawn_recommendation_worker(urls.last().unwrap().to_string(), tx.clone());
             }
         }
-        if urls.len() > current + 1{
-            if !check_song(urls[current+1].get("id").and_then(Value::as_str).unwrap()) && !urls[current+1].get("url").and_then(Value::as_str).unwrap().starts_with("/"){
-                if save{
-                    urls[current+1]["url"]   = json!(cache_next_song(urls[current+1].get("url").and_then(Value::as_str).unwrap()).await);
+        if urls.len() > current + 1 {
+            if !check_song(urls[current + 1].get("id").and_then(Value::as_str).unwrap())
+                && !urls[current + 1]
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .starts_with("/")
+            {
+                if save {
+                    urls[current + 1]["url"] = json!(
+                        cache_next_song(
+                            urls[current + 1]
+                                .get("url")
+                                .and_then(Value::as_str)
+                                .unwrap()
+                        )
+                        .await
+                    );
                 }
             }
         }

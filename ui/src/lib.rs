@@ -85,7 +85,7 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[Value]) {
             .merge_borders(merge::MergeStrategy::Exact),
     );
     let mut playlst = String::new();
-    for i in playlist{
+    for i in playlist {
         let name = i.get("name").and_then(Value::as_str).unwrap();
         playlst += name;
         playlst += "\n";

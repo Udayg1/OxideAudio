@@ -32,7 +32,7 @@ pub fn crossfade(mpv1: &mut Mpv, mpv2: &mut Mpv, new_song: String) {
     } else {
         queue_song(mpv2, &new_song);
     }
-    
+
     let dur: f64 = mpv1.get_property("duration").unwrap();
     let start_time = Instant::now();
 
@@ -302,7 +302,11 @@ pub async fn add_song(
         let cached = check_song(&id.to_string());
         if cached {
             urls.insert(
-                if cur == 0 { 0 } else { cur + 1 },
+                if cur == 0 && urls.len() == 0 {
+                    0
+                } else {
+                    cur + 1
+                },
                 json!({"url": concat_strings(Vec::from([
                     &env::var("HOME").unwrap(),
                     "/.local/share/mscply/songs/",
@@ -334,7 +338,11 @@ pub async fn add_song(
             let decoded = decode_base64(manifest.unwrap());
             if decoded.starts_with("<?xml") {
                 urls.insert(
-                    if cur == 0 { 0 } else { cur + 1 },
+                    if cur == 0 && urls.len() == 0 {
+                        0
+                    } else {
+                        cur + 1
+                    },
                     json!({"url": decoded, "name":concat_strings(Vec::from([
                     track
                         .get("title")
@@ -355,7 +363,11 @@ pub async fn add_song(
                     .and_then(Value::as_str)
                 {
                     urls.insert(
-                        if cur == 0 { 0 } else { cur + 1 },
+                        if cur == 0 && urls.len() == 0 {
+                            0
+                        } else {
+                            cur + 1
+                        },
                         json!({"url": url.to_string(), "name":concat_strings(Vec::from([
                         track
                             .get("title")
