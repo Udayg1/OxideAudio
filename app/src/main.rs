@@ -84,6 +84,11 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
         ]));
         app.queue_len = (urls.len() - *current - 1) as i64;
         app.dirty = true;
+    } else if !mpv.get_property::<bool>("idle-active").unwrap() {
+        match mpv.command("seek", &["0", "absolute"]) {
+            Ok(_) => {}
+            Err(_) => {}
+        }
     }
 }
 
@@ -128,6 +133,7 @@ async fn main() {
     set_url();
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
+    let (cache_send, cache_recv): (Sender<String>, Receiver<String>) = mpsc::channel();
     let log_file_location = concat_strings(Vec::from([
         &env::var("HOME").unwrap(),
         "/.local/share/mscply/mpv.log",
@@ -241,6 +247,7 @@ async fn main() {
                 let _ = crossterm::event::read();
             }
         }
+        last_add = 0;
 
         if SHUTDOWN.load(Ordering::SeqCst) {
             break;
@@ -259,15 +266,20 @@ async fn main() {
                     .starts_with("/")
             {
                 if save {
-                    urls[current + 1]["url"] = json!(
-                        cache_next_song(
-                            urls[current + 1]
-                                .get("url")
-                                .and_then(Value::as_str)
-                                .unwrap()
-                        )
-                        .await
-                    );
+                    if !IS_CACHING.load(Ordering::SeqCst) {
+                        if let Ok(data) = cache_recv.try_recv() {
+                            urls[current + 1]["url"] = json!(data);
+                        } else {
+                            cache_next_song(
+                                urls[current + 1]
+                                    .get("url")
+                                    .and_then(Value::as_str)
+                                    .unwrap()
+                                    .to_string(),
+                                cache_send.clone(),
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -332,6 +344,19 @@ async fn main() {
                 _auto_started = true;
             }
         }
+
+        if app.dirty {
+            if current != urls.len() {
+                terminal
+                    .draw(|f| draw_ui(f, &app, &urls[current + 1..]))
+                    .unwrap();
+            } else {
+                terminal
+                    .draw(|f| draw_ui(f, &app, &urls[current..]))
+                    .unwrap();
+            }
+            app.dirty = false;
+        }
         while let Ok(item) = rx.try_recv() {
             match item {
                 QueueItem::Url(url) => {
@@ -344,18 +369,6 @@ async fn main() {
             if last_add > 5 {
                 break;
             }
-        }
-        if app.dirty {
-            if current != urls.len() {
-                terminal
-                    .draw(|f| draw_ui(f, &app, &urls[current + 1..]))
-                    .unwrap();
-            } else {
-                terminal
-                    .draw(|f| draw_ui(f, &app, &urls[current..]))
-                    .unwrap();
-            }
-            app.dirty = false;
         }
         if crossterm::event::poll(time::Duration::from_millis(10)).unwrap() {
             while crossterm::event::poll(Duration::from_millis(0)).unwrap() {

@@ -71,7 +71,6 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[Value]) {
     let header = Paragraph::new("mscply — Tidal / YTM player")
         .block(Block::default().borders(Borders::ALL).title(""));
     let body = Paragraph::new(concat_strings(Vec::from([
-        "Status: ",
         app.status.as_str(),
         "\nPaused: ",
         &app.paused.to_string(),
@@ -142,28 +141,32 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[Value]) {
                             .and_then(Value::as_array);
                         let tag: &Vec<Value>;
                         let mut qual = "";
+                        let mut sec_str = sec.to_string();
+                        if sec < 10 {
+                            sec_str = concat_strings(Vec::from(["0", &sec_str]));
+                        }
                         if !tags.is_none() {
                             tag = tags.unwrap();
                             qual = if !tag.is_empty()
                                 && tag.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS"))
                             {
-                                "24 bit/192kHz"
+                                "upto 24 bit/192kHz"
                             } else {
                                 t.get("audioQuality").and_then(Value::as_str).unwrap()
                             }
                         }
                         if qual == "LOSSLESS" {
-                            qual = "16 bit/44.1kHz"
+                            qual = "upto 16 bit/44.1kHz"
                         }
                         ListItem::new(concat_strings(Vec::from([
                             prefix,
                             title,
-                            "—",
+                            " — ",
                             artist,
                             " (",
                             &min.to_string(),
                             ":",
-                            &sec.to_string(),
+                            &sec_str,
                             ", ",
                             qual,
                             ")",

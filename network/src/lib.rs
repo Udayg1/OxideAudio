@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 use std::cmp::Reverse;
 use std::io::Write;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 use std::{env, fs};
 use uuid;
@@ -13,6 +15,7 @@ pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
 pub static QUERYBASE: OnceLock<String> = OnceLock::new();
 pub static STREAM: OnceLock<String> = OnceLock::new();
 pub static INFOSTREAM: OnceLock<String> = OnceLock::new();
+pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 
 pub async fn get_quality(id: &str) -> String {
@@ -60,60 +63,69 @@ pub async fn get_quality(id: &str) -> String {
     }
 }
 
-pub async fn cache_next_song(url: &str) -> String {
-    let cli = Client::new();
-    let path = concat_strings(Vec::from([
-        env::temp_dir().to_str().unwrap(),
-        "/",
-        &uuid::Uuid::new_v4().to_string(),
-    ]));
-    if url.starts_with("<?xml") {
-        let new: Vec<&str> = url.split(" ").collect();
-        let mut init: String = "--".to_string();
-        let mut r = "--";
-        for i in new {
-            if i.starts_with("media=") {
-                init = i[7..i.len() - 1].to_string();
-            } else if i.starts_with("r=") {
-                let smth = i.split("/").collect::<Vec<&str>>()[0];
-                r = &smth[3..smth.len() - 1];
+pub fn cache_next_song(url: String, sx: Sender<String>) {
+    tokio::spawn(async move {
+        IS_CACHING.store(true, std::sync::atomic::Ordering::SeqCst);
+        let cli = Client::new();
+        let path = concat_strings(Vec::from([
+            env::temp_dir().to_str().unwrap(),
+            "/",
+            &uuid::Uuid::new_v4().to_string(),
+        ]));
+        if url.starts_with("<?xml") {
+            let new: Vec<&str> = url.split(" ").collect();
+            let mut init: String = "--".to_string();
+            let mut r = "--";
+            for i in new {
+                if i.starts_with("media=") {
+                    init = i[7..i.len() - 1].to_string();
+                } else if i.starts_with("r=") {
+                    let smth = i.split("/").collect::<Vec<&str>>()[0];
+                    r = &smth[3..smth.len() - 1];
+                }
             }
-        }
-        init = init.replace("amp;", "");
-        let new_init = init.split("$Number$").collect::<Vec<&str>>();
-        let r = r.parse::<u32>().unwrap();
-        let mut bytes: Vec<u8> = Vec::new();
-        for i in 0..=r + 2 {
-            let resp = cli
-                .get(concat_strings(Vec::from([
-                    new_init[0],
-                    &i.to_string(),
-                    new_init[1],
-                ])))
-                .send()
-                .await;
-            if resp.is_err() {
-                return "".to_string();
+            init = init.replace("amp;", "");
+            let new_init = init.split("$Number$").collect::<Vec<&str>>();
+            let r = r.parse::<u32>().unwrap();
+            let mut bytes: Vec<u8> = Vec::new();
+            for i in 0..=r + 2 {
+                let resp = cli
+                    .get(concat_strings(Vec::from([
+                        new_init[0],
+                        &i.to_string(),
+                        new_init[1],
+                    ])))
+                    .send()
+                    .await;
+                if resp.is_err() {
+                    IS_CACHING.store(false, std::sync::atomic::Ordering::SeqCst);
+                    sx.send("".to_string()).unwrap();
+                    return;
+                }
+                let chunk = resp.unwrap().bytes().await.unwrap();
+                bytes.extend_from_slice(&chunk);
             }
-            let chunk = resp.unwrap().bytes().await.unwrap();
-            bytes.extend_from_slice(&chunk);
+            let mut handle = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&path)
+                .unwrap();
+            handle.write_all(&bytes).unwrap();
+            IS_CACHING.store(false, std::sync::atomic::Ordering::SeqCst);
+            sx.send(path).unwrap();
+            return;
+        } else {
+            // if fs::metadata(&path).is_ok() {
+            //     return path;
+            // }
+            // eprintln!("{}/ -- {url}", env::temp_dir().display());
+            let bytes = cli.get(url).send().await.unwrap().bytes().await;
+            fs::write(&path, bytes.unwrap()).ok();
+            IS_CACHING.store(false, std::sync::atomic::Ordering::SeqCst);
+            sx.send(path).unwrap();
+            return;
         }
-        let mut handle = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(&path)
-            .unwrap();
-        handle.write_all(&bytes).unwrap();
-        path
-    } else {
-        // if fs::metadata(&path).is_ok() {
-        //     return path;
-        // }
-        // eprintln!("{}/ -- {url}", env::temp_dir().display());
-        let bytes = cli.get(url).send().await.unwrap().bytes().await;
-        fs::write(&path, bytes.unwrap()).ok();
-        path
-    }
+    });
 }
 
 pub fn set_url() {
@@ -337,7 +349,11 @@ pub async fn convert_to_ytm(name: &str) -> Option<String> {
             .and_then(Value::as_str)
             .map(|s| s.to_string());
     }
-    first
+    if !first.is_none() {
+        first
+    } else {
+        Some("".to_string())
+    }
 }
 
 pub async fn get_ytrecs(ytid: &str) -> Value {
