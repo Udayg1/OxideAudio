@@ -18,6 +18,11 @@ pub static INFOSTREAM: OnceLock<String> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 
+pub struct CacheItem{
+    pub path: String,
+    pub index: usize
+}
+
 pub async fn get_quality(id: &str) -> String {
     let cli = Client::builder()
         .connect_timeout(Duration::from_secs(5))
@@ -63,15 +68,21 @@ pub async fn get_quality(id: &str) -> String {
     }
 }
 
-pub fn cache_next_song(url: String, sx: Sender<String>) {
+pub fn cache_next_song(url: String,index: usize ,sx: Sender<CacheItem>) {
     tokio::spawn(async move {
-        IS_CACHING.store(true, std::sync::atomic::Ordering::SeqCst);
-        let cli = Client::new();
         let path = concat_strings(Vec::from([
             env::temp_dir().to_str().unwrap(),
             "/",
             &uuid::Uuid::new_v4().to_string(),
         ]));
+        let path2 = path.to_string();
+        let return_item = CacheItem{
+            path: path2,
+            index: index
+        };
+        IS_CACHING.store(true, std::sync::atomic::Ordering::SeqCst);
+        let cli = Client::new();
+
         if url.starts_with("<?xml") {
             let new: Vec<&str> = url.split(" ").collect();
             let mut init: String = "--".to_string();
@@ -99,7 +110,7 @@ pub fn cache_next_song(url: String, sx: Sender<String>) {
                     .await;
                 if resp.is_err() {
                     IS_CACHING.store(false, std::sync::atomic::Ordering::SeqCst);
-                    sx.send("".to_string()).unwrap();
+                    sx.send(return_item).unwrap();
                     return;
                 }
                 let chunk = resp.unwrap().bytes().await.unwrap();
@@ -112,7 +123,7 @@ pub fn cache_next_song(url: String, sx: Sender<String>) {
                 .unwrap();
             handle.write_all(&bytes).unwrap();
             IS_CACHING.store(false, std::sync::atomic::Ordering::SeqCst);
-            sx.send(path).unwrap();
+            sx.send(return_item).unwrap();
             return;
         } else {
             // if fs::metadata(&path).is_ok() {
@@ -122,7 +133,7 @@ pub fn cache_next_song(url: String, sx: Sender<String>) {
             let bytes = cli.get(url).send().await.unwrap().bytes().await;
             fs::write(&path, bytes.unwrap()).ok();
             IS_CACHING.store(false, std::sync::atomic::Ordering::SeqCst);
-            sx.send(path).unwrap();
+            sx.send(return_item).unwrap();
             return;
         }
     });

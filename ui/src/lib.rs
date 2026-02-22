@@ -31,6 +31,8 @@ pub struct App {
     pub paused: bool,
     pub mode: UiMode,
     pub dirty: bool,
+    pub cur_time: i64,
+    pub dur: i64,
 }
 
 pub fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
@@ -70,19 +72,71 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &App, playlist: &[Value]) {
     }
     let header = Paragraph::new("mscply — Tidal / YTM player")
         .block(Block::default().borders(Borders::ALL).title(""));
-    let body = Paragraph::new(concat_strings(Vec::from([
-        app.status.as_str(),
-        "\nPaused: ",
-        &app.paused.to_string(),
-        "\nQueue: ",
-        &app.queue_len.to_string(),
-    ])))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Player")
-            .merge_borders(merge::MergeStrategy::Exact),
-    );
+    let mut cur_time_str = String::new();
+    let body;
+    let cur_min = app.cur_time / 60;
+    if cur_min > 60 {
+        cur_time_str += &(cur_min / 60).to_string();
+        cur_time_str += ":";
+    }
+    cur_time_str += &cur_min.to_string();
+    cur_time_str += ":";
+    if app.cur_time % 60 < 10 {
+        cur_time_str += "0";
+        cur_time_str += &(app.cur_time % 60).to_string();
+    } else {
+        cur_time_str += &(app.cur_time % 60).to_string();
+    };
+    let mut dur_str = String::new();
+    let cur_min = app.dur / 60;
+    if cur_min > 60 {
+        dur_str += &(cur_min / 60).to_string();
+        dur_str += ":";
+    }
+    dur_str += &cur_min.to_string();
+    dur_str += ":";
+    if (app.dur % 60) < 10 {
+        dur_str += "0";
+        dur_str += &(app.dur % 60).to_string();
+    } else {
+        dur_str += &(app.dur % 60).to_string();
+    };
+    if app.status.starts_with("Playing") && app.dur != 0 {
+        body = Paragraph::new(concat_strings(Vec::from([
+            &concat_strings(Vec::from([
+                app.status.as_str(),
+                " (",
+                &cur_time_str,
+                "/",
+                &dur_str,
+                ")",
+            ])),
+            "\nPaused: ",
+            &app.paused.to_string(),
+            "\nQueue: ",
+            &app.queue_len.to_string(),
+        ])))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Player")
+                .merge_borders(merge::MergeStrategy::Exact),
+        );
+    } else {
+        body = Paragraph::new(concat_strings(Vec::from([
+            &app.status.as_str(),
+            "\nPaused: ",
+            &app.paused.to_string(),
+            "\nQueue: ",
+            &app.queue_len.to_string(),
+        ])))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Player")
+                .merge_borders(merge::MergeStrategy::Exact),
+        );
+    }
     let mut playlst = String::new();
     for i in playlist {
         let name = i.get("name").and_then(Value::as_str).unwrap();

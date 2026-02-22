@@ -133,7 +133,7 @@ async fn main() {
     set_url();
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
-    let (cache_send, cache_recv): (Sender<String>, Receiver<String>) = mpsc::channel();
+    let (cache_send, cache_recv): (Sender<CacheItem>, Receiver<CacheItem>) = mpsc::channel();
     let log_file_location = concat_strings(Vec::from([
         &env::var("HOME").unwrap(),
         "/.local/share/mscply/mpv.log",
@@ -168,6 +168,8 @@ async fn main() {
         paused: false,
         mode: UiMode::Normal,
         dirty: true,
+        cur_time: 0,
+        dur: 0,
     };
     mpv.observe_property("idle-active", Format::Flag, 2)
         .unwrap();
@@ -179,6 +181,8 @@ async fn main() {
         .unwrap();
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
     let mut last_add;
+    let mut last_update = Instant::now();
+    let update_every = Duration::from_millis(100);
     let skip_every = Duration::from_millis(800);
     let mut _auto_started = false;
     let mut _skipped = false;
@@ -200,6 +204,8 @@ async fn main() {
             && dura - tim < CROSSFADE_DUR
             && current + 1 < urls.len()
         {
+            app.cur_time = 0;
+            app.dur = 0;
             current += 1;
             app.status = concat_strings(Vec::from([
                 "Playing ",
@@ -227,7 +233,9 @@ async fn main() {
                 );
                 player_num = 2;
                 dura = mpv2.get_property("duration").unwrap();
+                app.dur = dura.round() as i64;
                 tim = mpv2.get_property("time-pos").unwrap();
+                app.cur_time = tim.round() as i64;
             } else if player_num == 2 {
                 crossfade(
                     &mut mpv2,
@@ -241,6 +249,8 @@ async fn main() {
                 player_num = 1;
                 dura = mpv.get_property("duration").unwrap();
                 tim = mpv.get_property("time-pos").unwrap();
+                app.cur_time = tim.round() as i64;
+                app.dur = dura.round() as i64;
             }
             while crossterm::event::poll(Duration::from_millis(0)).unwrap() && last_add < 5 {
                 last_add += 1;
@@ -268,7 +278,7 @@ async fn main() {
                 if save {
                     if !IS_CACHING.load(Ordering::SeqCst) {
                         if let Ok(data) = cache_recv.try_recv() {
-                            urls[current + 1]["url"] = json!(data);
+                            urls[data.index]["url"] = json!(data.path);
                         } else {
                             cache_next_song(
                                 urls[current + 1]
@@ -276,6 +286,7 @@ async fn main() {
                                     .and_then(Value::as_str)
                                     .unwrap()
                                     .to_string(),
+                                current + 1,
                                 cache_send.clone(),
                             );
                         }
@@ -293,6 +304,7 @@ async fn main() {
                             ..
                         } => {
                             dura = f;
+                            app.dur = f.round() as i64;
                         }
                         eve::PropertyChange {
                             change: PropertyData::Double(f),
@@ -300,6 +312,7 @@ async fn main() {
                             ..
                         } => {
                             tim = f;
+                            app.cur_time = f.round() as i64;
                         }
                         _ => {}
                     },
@@ -316,6 +329,7 @@ async fn main() {
                             ..
                         } => {
                             dura = f;
+                            app.dur = f.round() as i64;
                         }
                         eve::PropertyChange {
                             change: PropertyData::Double(f),
@@ -323,6 +337,7 @@ async fn main() {
                             ..
                         } => {
                             tim = f;
+                            app.cur_time = f.round() as i64;
                         }
                         _ => {}
                     },
@@ -335,6 +350,8 @@ async fn main() {
             && urls.len() >= current + 1
         {
             if last_mode_switch.elapsed() >= skip_every {
+                app.cur_time = 0;
+                app.dur = 0;
                 if player_num == 1 {
                     advance_playback(&mut mpv, &urls, &mut current, &mut app);
                 } else if player_num == 2 {
@@ -345,7 +362,7 @@ async fn main() {
             }
         }
 
-        if app.dirty {
+        if app.dirty || Instant::now() - last_update > update_every {
             if current != urls.len() {
                 terminal
                     .draw(|f| draw_ui(f, &app, &urls[current + 1..]))
@@ -356,6 +373,7 @@ async fn main() {
                     .unwrap();
             }
             app.dirty = false;
+            last_update = Instant::now();
         }
         while let Ok(item) = rx.try_recv() {
             match item {
@@ -403,6 +421,8 @@ async fn main() {
                             }
                             KeyCode::Char('r') => {
                                 _skipped = true;
+                                app.cur_time = 0;
+                                app.dur = 0;
                                 if player_num == 1 {
                                     rewind_playback(&mut mpv, &urls, &mut current, &mut app);
                                 } else if player_num == 2 {
@@ -412,6 +432,8 @@ async fn main() {
                             }
                             KeyCode::Char('s') => {
                                 _skipped = true;
+                                app.dur = 0;
+                                app.cur_time = 0;
                                 if player_num == 1 {
                                     advance_playback(&mut mpv, &urls, &mut current, &mut app);
                                 } else if player_num == 2 {
@@ -439,6 +461,11 @@ async fn main() {
                                             _ => {}
                                         }
                                     }
+                                    app.cur_time += 5;
+                                    if app.cur_time > app.dur {
+                                        app.cur_time = app.dur;
+                                    }
+                                    app.dirty = true;
                                 }
                             }
                             KeyCode::Char('b') => {
@@ -457,6 +484,11 @@ async fn main() {
                                         }
                                     }
                                 }
+                                app.cur_time -= 5;
+                                if app.cur_time > app.dur {
+                                    app.cur_time = app.dur;
+                                }
+                                app.dirty = true;
                             }
                             _ => {}
                         },
@@ -600,4 +632,16 @@ async fn main() {
         }
     }
     restore_terminal(terminal);
+    for i in urls {
+        let url = i.get("url").and_then(Value::as_str);
+        if !url.is_none() {
+            let furl = url.unwrap();
+            if furl.starts_with(&env::temp_dir().display().to_string()) {
+                match fs::remove_file(furl) {
+                    Ok(_) => {}
+                    Err(_) => {}
+                }
+            }
+        }
+    }
 }
