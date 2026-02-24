@@ -29,10 +29,11 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
 
     *current += 1;
     app.queue_len = (urls.len() - *current - 1) as i64;
-    app.status = concat_strings(Vec::from([
-        "Playing ",
-        urls[*current].get("name").and_then(Value::as_str).unwrap(),
-    ]));
+    app.status = urls[*current]
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
     app.image = urls[*current]
         .get("image")
         .and_then(Value::as_str)
@@ -82,10 +83,11 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
             );
         }
         *current -= 1;
-        app.status = concat_strings(Vec::from([
-            "Playing ",
-            &urls[*current].get("name").and_then(Value::as_str).unwrap(),
-        ]));
+        app.status = urls[*current]
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         app.image = urls[*current]
             .get("image")
             .and_then(Value::as_str)
@@ -180,6 +182,10 @@ async fn main() {
         cur_time: 0,
         dur: 0,
         image: String::new(),
+        track_format: String::new(),
+        sample_rate: 0,
+        channel_count: 0,
+        bitrate: 0,
     };
     mpv.observe_property("idle-active", Format::Flag, 2)
         .unwrap();
@@ -188,6 +194,10 @@ async fn main() {
         .unwrap();
     mpv.observe_property("duration", Format::Double, 1).unwrap();
     mpv2.observe_property("duration", Format::Double, 1)
+        .unwrap();
+    mpv.observe_property("track-list", Format::String, 4)
+        .unwrap();
+    mpv2.observe_property("track-list", Format::String, 4)
         .unwrap();
     let mut options = Options { queue: true };
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
@@ -218,10 +228,11 @@ async fn main() {
             app.cur_time = 0;
             app.dur = 0;
             current += 1;
-            app.status = concat_strings(Vec::from([
-                "Playing ",
-                urls[current].get("name").and_then(Value::as_str).unwrap(),
-            ]));
+            app.status = urls[current]
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string();
             app.image = urls[current]
                 .get("image")
                 .and_then(Value::as_str)
@@ -330,6 +341,47 @@ async fn main() {
                             tim = f;
                             app.cur_time = f.round() as i64;
                         }
+                        eve::PropertyChange {
+                            name: _,
+                            change: PropertyData::Str(e),
+                            reply_userdata: 4,
+                        } => {
+                            let newvec = serde_json::from_str::<Vec<Value>>(e).unwrap();
+                            if newvec.is_empty() {
+                                continue;
+                            }
+                            let json = newvec.get(0).unwrap();
+                            eprintln!("{e} ---- {json}");
+                            app.channel_count =
+                                json.get("audio-channels").and_then(Value::as_i64).unwrap();
+                            app.sample_rate = json
+                                .get("demux-samplerate")
+                                .and_then(Value::as_i64)
+                                .unwrap();
+                            app.track_format = json
+                                .get("codec")
+                                .and_then(Value::as_str)
+                                .unwrap()
+                                .to_uppercase();
+                            let bitrate = json.get("demux-bitrate").and_then(Value::as_i64);
+                            if !bitrate.is_none() {
+                                app.bitrate = bitrate.unwrap()
+                            } else {
+                                let bitrate = mpv.get_property::<i64>("audio-bitrate");
+                                if !bitrate.is_err() {
+                                    app.bitrate = bitrate.unwrap();
+                                } else {
+                                    let format = json.get("format-name").and_then(Value::as_str);
+                                    if format.is_none() {
+                                        app.bitrate = 0;
+                                        continue;
+                                    }
+                                    app.bitrate = app.sample_rate
+                                        * app.channel_count
+                                        * if format.unwrap() == "s16" { 16 } else { 24 }
+                                }
+                            }
+                        }
                         _ => {}
                     },
                     _ => {}
@@ -354,6 +406,48 @@ async fn main() {
                         } => {
                             tim = f;
                             app.cur_time = f.round() as i64;
+                        }
+                        eve::PropertyChange {
+                            name: _,
+                            change: PropertyData::Str(e),
+                            reply_userdata: 4,
+                        } => {
+                            let newvec = serde_json::from_str::<Vec<Value>>(e).unwrap();
+                            if newvec.is_empty() {
+                                continue;
+                            }
+                            let json = newvec.get(0).unwrap();
+                            eprintln!("{e} ---- {json}");
+
+                            app.channel_count =
+                                json.get("audio-channels").and_then(Value::as_i64).unwrap();
+                            app.sample_rate = json
+                                .get("demux-samplerate")
+                                .and_then(Value::as_i64)
+                                .unwrap();
+                            app.track_format = json
+                                .get("codec")
+                                .and_then(Value::as_str)
+                                .unwrap()
+                                .to_uppercase();
+                            let bitrate = json.get("demux-bitrate").and_then(Value::as_i64);
+                            if !bitrate.is_none() {
+                                app.bitrate = bitrate.unwrap()
+                            } else {
+                                let bitrate = mpv2.get_property::<i64>("audio-bitrate");
+                                if !bitrate.is_err() {
+                                    app.bitrate = bitrate.unwrap();
+                                } else {
+                                    let format = json.get("format-name").and_then(Value::as_str);
+                                    if format.is_none() {
+                                        app.bitrate = 0;
+                                        continue;
+                                    }
+                                    app.bitrate = app.sample_rate
+                                        * app.channel_count
+                                        * if format.unwrap() == "s16" { 16 } else { 24 }
+                                }
+                            }
                         }
                         _ => {}
                     },
@@ -597,10 +691,12 @@ async fn main() {
                                     if current != 0 {
                                         current += 1;
                                     }
-                                    app.status = concat_strings(Vec::from([
-                                        "Playing ",
-                                        &urls[current].get("name").and_then(Value::as_str).unwrap(),
-                                    ]));
+                                    app.status = urls[current]
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap()
+                                        .to_string();
+
                                     app.image = urls[current]
                                         .get("image")
                                         .and_then(Value::as_str)

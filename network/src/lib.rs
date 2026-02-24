@@ -89,7 +89,7 @@ pub async fn get_quality(id: &str) -> Value {
         }
         json!({"quality":quality.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
     } else {
-        json!({"quality":"".to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
+        json!({"quality":"".to_string(), "image": ""})
     }
 }
 
@@ -151,10 +151,6 @@ pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
             sx.send(return_item).unwrap();
             return;
         } else {
-            // if fs::metadata(&path).is_ok() {
-            //     return path;
-            // }
-            // eprintln!("{}/ -- {url}", env::temp_dir().display());
             let bytes = cli.get(url).send().await.unwrap().bytes().await;
             fs::write(&path, bytes.unwrap()).ok();
             IS_CACHING.store(false, std::sync::atomic::Ordering::SeqCst);

@@ -6,7 +6,7 @@ use macros::concat_strings;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Spacing},
+    layout::{Constraint, Direction, Layout},
     symbols::merge,
     widgets::{Block, Borders, Paragraph},
 };
@@ -39,6 +39,10 @@ pub struct App {
     pub cur_time: i64,
     pub dur: i64,
     pub image: String,
+    pub track_format: String,
+    pub sample_rate: i64,
+    pub channel_count: i64,
+    pub bitrate: i64,
 }
 
 pub fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
@@ -54,26 +58,21 @@ pub fn restore_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) {
     terminal.show_cursor().unwrap();
 }
 
-pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], options: &Options) {
+pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _options: &Options) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
+            Constraint::Length(5),
+            Constraint::Fill(1),
             Constraint::Length(3),
         ])
         .split(f.area());
-    let wid = f.area().width;
-    let hei = f.area().height;
-    let header = Paragraph::new("mscply — Tidal / YTM player")
-        .block(Block::default().borders(Borders::ALL).title(""));
     let footer = Paragraph::new(match app.mode {
         UiMode::Normal => "[a] Add [p] Pause/Resume [r] Back [s] Skip [f] seek forward [b] seek backward [u] show/hide queue [h] Quit",
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
         UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",})
         .block(Block::default().borders(Borders::ALL).title("[Controls]"));
     let mut cur_time_str = String::new();
-    let body;
     let cur_min = app.cur_time / 60;
     if cur_min > 60 {
         cur_time_str += &(cur_min / 60).to_string();
@@ -101,78 +100,59 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], option
     } else {
         dur_str += &(app.dur % 60).to_string();
     };
-    let text;
-    if app.status.starts_with("Playing") && app.dur != 0 {
-        text = concat_strings(Vec::from([
-            app.status.as_str(),
-            " (",
-            &cur_time_str,
-            "/",
-            &dur_str,
-            ")",
-        ]))
-    } else {
-        text = app.status.to_string();
-    }
-    body = Paragraph::new("")
-        .alignment(Alignment::Center)
-        .centered()
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("[Player]")
-                .merge_borders(merge::MergeStrategy::Exact),
-        );
-    let song_body = Paragraph::new(text).centered();
-    if options.queue {
-        let mut top_body;
-        let bottom_body;
-        if wid as f32 / hei as f32 > 1.5 {
-            [top_body, bottom_body] = Layout::horizontal([Constraint::Fill(0); 2])
-                .spacing(Spacing::Overlap(1))
-                .areas(chunks[1]);
-        } else {
-            [top_body, bottom_body] = Layout::vertical([Constraint::Fill(0); 2])
-                .spacing(Spacing::Overlap(1))
-                .areas(chunks[1]);
+    let mut text = String::new();
+    text += " >> ";
+    if !app.status.starts_with("Nothing") {
+        text += &app.status;
+        text += "\n";
+        if app.dur != 0 {
+            text += &concat_strings(Vec::from([
+                "[",
+                &cur_time_str,
+                "] [",
+                &dur_str,
+                "] • ",
+                &app.track_format,
+                " • ",
+                &(app.sample_rate as f64 / 1000.0).to_string(),
+                "kHz • ",
+                &(app.bitrate / 1024).to_string(),
+                "kbps • ",
+                if app.channel_count == 2 {
+                    "STEREO"
+                } else {
+                    "MONO"
+                },
+            ]));
         }
-
-        top_body = top_body.centered_vertically(Constraint::Fill(1));
-
-        let [_top, bottom] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-            .areas(top_body);
-        let mut playlst = String::new();
-        for i in playlist {
-            let name = i.get("name").and_then(Value::as_str).unwrap();
-            playlst += name;
-            playlst += "\n";
-        }
-        playlst = playlst.trim().to_string();
-        let body_playlist = Paragraph::new(playlst).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(concat_strings(Vec::from([
-                    "[Up Next - ",
-                    &app.queue_len.to_string(),
-                    "]",
-                ])))
-                .merge_borders(merge::MergeStrategy::Exact),
-        );
-        f.render_widget(body, top_body);
-        f.render_widget(song_body, bottom);
-        f.render_widget(body_playlist, bottom_body);
     } else {
-        let _top_song;
-        let bottom_song;
-        [_top_song, bottom_song] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-            .areas(chunks[1]);
-        f.render_widget(body, chunks[1]);
-        f.render_widget(song_body, bottom_song);
+        text += &app.status;
     }
+
+    let header = Paragraph::new(text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("[Playing...   ]"),
+    );
+
+    let mut playlst = String::new();
+    for i in playlist {
+        let name = i.get("name").and_then(Value::as_str).unwrap();
+        playlst += name;
+        playlst += "\n";
+    }
+    playlst = playlst.trim().to_string();
+    let body_playlist = Paragraph::new(playlst).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(concat_strings(Vec::from([
+                "[Up Next - ",
+                &app.queue_len.to_string(),
+                "]",
+            ])))
+            .merge_borders(merge::MergeStrategy::Exact),
+    );
+    f.render_widget(body_playlist, chunks[1]);
     f.render_widget(header, chunks[0]);
     f.render_widget(footer, chunks[2]);
     if matches!(app.mode, UiMode::Search | UiMode::Results) {
