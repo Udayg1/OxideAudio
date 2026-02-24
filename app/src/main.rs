@@ -33,7 +33,11 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
         "Playing ",
         urls[*current].get("name").and_then(Value::as_str).unwrap(),
     ]));
-
+    app.image = urls[*current]
+        .get("image")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_string();
     if urls[*current]
         .get("url")
         .and_then(Value::as_str)
@@ -82,6 +86,11 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
             "Playing ",
             &urls[*current].get("name").and_then(Value::as_str).unwrap(),
         ]));
+        app.image = urls[*current]
+            .get("image")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_string();
         app.queue_len = (urls.len() - *current - 1) as i64;
         app.dirty = true;
     } else if !mpv.get_property::<bool>("idle-active").unwrap() {
@@ -170,6 +179,7 @@ async fn main() {
         dirty: true,
         cur_time: 0,
         dur: 0,
+        image: String::new(),
     };
     mpv.observe_property("idle-active", Format::Flag, 2)
         .unwrap();
@@ -179,6 +189,7 @@ async fn main() {
     mpv.observe_property("duration", Format::Double, 1).unwrap();
     mpv2.observe_property("duration", Format::Double, 1)
         .unwrap();
+    let mut options = Options { queue: true };
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
     let mut last_add;
     let mut last_update = Instant::now();
@@ -211,14 +222,19 @@ async fn main() {
                 "Playing ",
                 urls[current].get("name").and_then(Value::as_str).unwrap(),
             ]));
+            app.image = urls[current]
+                .get("image")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string();
             app.queue_len = (urls.len() - current - 1) as i64;
             if current != urls.len() {
                 terminal
-                    .draw(|f| draw_ui(f, &app, &urls[current + 1..]))
+                    .draw(|f| draw_ui(f, &mut app, &urls[current + 1..], &options))
                     .unwrap();
             } else {
                 terminal
-                    .draw(|f| draw_ui(f, &app, &urls[current..]))
+                    .draw(|f| draw_ui(f, &mut app, &urls[current..], &options))
                     .unwrap();
             }
             if player_num == 1 {
@@ -365,11 +381,11 @@ async fn main() {
         if app.dirty || Instant::now() - last_update > update_every {
             if current != urls.len() {
                 terminal
-                    .draw(|f| draw_ui(f, &app, &urls[current + 1..]))
+                    .draw(|f| draw_ui(f, &mut app, &urls[current + 1..], &options))
                     .unwrap();
             } else {
                 terminal
-                    .draw(|f| draw_ui(f, &app, &urls[current..]))
+                    .draw(|f| draw_ui(f, &mut app, &urls[current..], &options))
                     .unwrap();
             }
             app.dirty = false;
@@ -399,6 +415,10 @@ async fn main() {
                                 app.dirty = true;
                                 SHUTDOWN.store(true, Ordering::SeqCst);
                                 break;
+                            }
+                            KeyCode::Char('u') => {
+                                app.dirty = true;
+                                options.queue = !options.queue;
                             }
                             KeyCode::Char('p') => {
                                 if !app.paused {
@@ -571,6 +591,7 @@ async fn main() {
                                 )
                                 .await;
                                 app.queue_len = (urls.len() - current - 1) as i64;
+
                                 app.dirty = true;
                                 if mpv.get_property::<i64>("playlist-pos").unwrap() == -1 {
                                     if current != 0 {
@@ -580,6 +601,12 @@ async fn main() {
                                         "Playing ",
                                         &urls[current].get("name").and_then(Value::as_str).unwrap(),
                                     ]));
+                                    app.image = urls[current]
+                                        .get("image")
+                                        .and_then(Value::as_str)
+                                        .unwrap()
+                                        .to_string();
+                                    eprintln!("{}", app.image);
                                     if urls[current]
                                         .get("url")
                                         .and_then(Value::as_str)
@@ -617,9 +644,9 @@ async fn main() {
                             terminal
                                 .draw(|f| {
                                     if current != urls.len() {
-                                        draw_ui(f, &app, &urls[current + 1..]);
+                                        draw_ui(f, &mut app, &urls[current + 1..], &options);
                                     } else {
-                                        draw_ui(f, &app, &urls[current..]);
+                                        draw_ui(f, &mut app, &urls[current..], &options);
                                     }
                                 })
                                 .unwrap();

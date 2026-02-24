@@ -23,7 +23,26 @@ pub struct CacheItem{
     pub index: usize
 }
 
-pub async fn get_quality(id: &str) -> String {
+pub async fn get_image(path_str: &str) -> String {
+    let full_path = concat_strings(Vec::from([
+        "https://resources.tidal.com/images/",
+        &path_str.split("-").collect::<Vec<&str>>().join("/"),
+        "/640x640.jpg",
+    ]));
+    let client = Client::new();
+    let res = client.get(full_path).header(USER_AGENT, AGENT).send().await.unwrap().bytes().await.unwrap();
+    let mut path = String::new();
+    path += env::temp_dir().to_str().unwrap();
+    path += "/";
+    path += &uuid::Uuid::new_v4().to_string();
+    path += ".jpg";
+    eprintln!("{path}");
+    fs::write(&path, res).unwrap();
+    path
+}
+
+
+pub async fn get_quality(id: &str) -> Value {
     let cli = Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .build()
@@ -50,7 +69,7 @@ pub async fn get_quality(id: &str) -> String {
     if !qual.is_none() {
         let mut quality = qual.unwrap();
         if quality == "LOSSLESS" && (pref == "HIGH" || pref == "LOW") {
-            return pref.to_string();
+            return json!({"quality":pref.to_string(), "image": res.get("album").and_then(|v| v.get("cover").and_then(Value::as_str)).unwrap()})
         }
 
         let tags = res
@@ -62,9 +81,9 @@ pub async fn get_quality(id: &str) -> String {
         if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")) {
             quality = "HI_RES_LOSSLESS";
         }
-        quality.to_string()
+        json!({"quality":quality.to_string(), "image": res.get("album").and_then(|v| v.get("cover").and_then(Value::as_str)).unwrap()})
     } else {
-        "".to_string()
+        json!({"quality":"".to_string(), "image": res.get("album").and_then(|v| v.get("cover").and_then(Value::as_str)).unwrap()})
     }
 }
 

@@ -152,6 +152,9 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                         return;
                     }
                     let cached = check_song(&tidal_id_final);
+                    let quality_json = get_quality(&tidal_id_final).await;
+                    // let image = get_image(quality_json.get("image").and_then(Value::as_str).unwrap()).await;
+                    let image = String::new();
                     if cached {
                         tx.send(QueueItem::Url(json!({"url":
                             concat_strings(Vec::from([
@@ -159,12 +162,12 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 "/.local/share/mscply/songs/",
                                 &tidal_id_final,
                             ])), "name":
-                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final})
+                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final, "image": image})
                         ))
                         .ok();
                         continue;
                     }
-                    let quality = get_quality(&tidal_id_final).await;
+                    let quality = quality_json.get("quality").and_then(Value::as_str).unwrap();
                     if quality.is_empty() {
                         continue;
                     }
@@ -184,7 +187,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 if *SAVE_DATA.get().unwrap_or(&true) {
                                     tx.send(QueueItem::Url(json!({"url":
                                         decoded.to_string(), "name":
-                                        concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
+                                        concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image})))
                                     .ok();
                                     continue;
                                 }
@@ -195,7 +198,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                                                 "/.local/share/mscply/songs/",
                                                                 &tidal_id_final,
                                                             ])), "name":
-                                                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
+                                                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image})))
                                 .ok();
                             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                                 if let Some(url) = json
@@ -207,7 +210,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     if *SAVE_DATA.get().unwrap_or(&true) {
                                         tx.send(QueueItem::Url(json!({"url":
                                             url.to_string(), "name":
-                                                                    concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
+                                                                    concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image})))
                                         .ok();
                                         continue;
                                     }
@@ -218,7 +221,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                                                     "/.local/share/mscply/songs/",
                                                                     &tidal_id_final,
                                                                 ])), "name":
-                                                                concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string()})))
+                                                                concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image":image})))
                                     .ok();
                                 }
                             }
@@ -321,7 +324,7 @@ pub async fn add_song(
                         .get("artist")
                         .and_then(|v| v.get("name").and_then(Value::as_str))
                         .unwrap_or("Unknown"),
-                ])), "id": id.to_string()}),
+                ])), "id": id.to_string(), "image": get_image(track.get("album").and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()).await}),
             );
         } else {
             let pref = PREF_QUAL.get().unwrap();
@@ -353,7 +356,7 @@ pub async fn add_song(
                         .get("artist")
                         .and_then(|v| v.get("name").and_then(Value::as_str))
                         .unwrap_or("Unknown"),
-                ])), "id": id.to_string()}),
+                ])), "id": id.to_string(), "image": get_image(track.get("album").and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()).await}),
                 );
             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                 if let Some(url) = json
@@ -378,7 +381,7 @@ pub async fn add_song(
                             .get("artist")
                             .and_then(|v| v.get("name").and_then(Value::as_str))
                             .unwrap_or("Unknown"),
-                    ])), "id": id.to_string()}),
+                    ])), "id": id.to_string(), "image": get_image(track.get("album").and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()).await}),
                     );
                 }
             }
