@@ -68,10 +68,10 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], option
     let header = Paragraph::new("mscply — Tidal / YTM player")
         .block(Block::default().borders(Borders::ALL).title(""));
     let footer = Paragraph::new(match app.mode {
-    UiMode::Normal => "[a] Add  [p] Pause/Resume  [r] Back  [s] Skip  [f] seek forward  [b] seek backward [u] show/hide queue [h] Quit",
-    UiMode::Search => "Type search, Enter = search, Esc = cancel",
-    UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",
-    }).block(Block::default().borders(Borders::ALL).title("Controls"));
+        UiMode::Normal => "[a] Add [p] Pause/Resume [r] Back [s] Skip [f] seek forward [b] seek backward [u] show/hide queue [h] Quit",
+        UiMode::Search => "Type search, Enter = search, Esc = cancel",
+        UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",})
+        .block(Block::default().borders(Borders::ALL).title("[Controls]"));
     let mut cur_time_str = String::new();
     let body;
     let cur_min = app.cur_time / 60;
@@ -120,7 +120,7 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], option
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Player")
+                .title("[Player]")
                 .merge_borders(merge::MergeStrategy::Exact),
         );
     let song_body = Paragraph::new(text).centered();
@@ -154,9 +154,9 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], option
             Block::default()
                 .borders(Borders::ALL)
                 .title(concat_strings(Vec::from([
-                    "Up Next - ",
+                    "[Up Next - ",
                     &app.queue_len.to_string(),
-                    " ",
+                    "]",
                 ])))
                 .merge_borders(merge::MergeStrategy::Exact),
         );
