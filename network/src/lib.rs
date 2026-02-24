@@ -18,9 +18,9 @@ pub static INFOSTREAM: OnceLock<String> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 
-pub struct CacheItem{
+pub struct CacheItem {
     pub path: String,
-    pub index: usize
+    pub index: usize,
 }
 
 pub async fn get_image(path_str: &str) -> String {
@@ -30,17 +30,23 @@ pub async fn get_image(path_str: &str) -> String {
         "/640x640.jpg",
     ]));
     let client = Client::new();
-    let res = client.get(full_path).header(USER_AGENT, AGENT).send().await.unwrap().bytes().await.unwrap();
+    let res = client
+        .get(full_path)
+        .header(USER_AGENT, AGENT)
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
     let mut path = String::new();
     path += env::temp_dir().to_str().unwrap();
     path += "/";
     path += &uuid::Uuid::new_v4().to_string();
     path += ".jpg";
-    eprintln!("{path}");
     fs::write(&path, res).unwrap();
     path
 }
-
 
 pub async fn get_quality(id: &str) -> Value {
     let cli = Client::builder()
@@ -69,7 +75,7 @@ pub async fn get_quality(id: &str) -> Value {
     if !qual.is_none() {
         let mut quality = qual.unwrap();
         if quality == "LOSSLESS" && (pref == "HIGH" || pref == "LOW") {
-            return json!({"quality":pref.to_string(), "image": res.get("album").and_then(|v| v.get("cover").and_then(Value::as_str)).unwrap()})
+            return json!({"quality":pref.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()});
         }
 
         let tags = res
@@ -81,13 +87,13 @@ pub async fn get_quality(id: &str) -> Value {
         if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")) {
             quality = "HI_RES_LOSSLESS";
         }
-        json!({"quality":quality.to_string(), "image": res.get("album").and_then(|v| v.get("cover").and_then(Value::as_str)).unwrap()})
+        json!({"quality":quality.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
     } else {
-        json!({"quality":"".to_string(), "image": res.get("album").and_then(|v| v.get("cover").and_then(Value::as_str)).unwrap()})
+        json!({"quality":"".to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
     }
 }
 
-pub fn cache_next_song(url: String,index: usize ,sx: Sender<CacheItem>) {
+pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
     tokio::spawn(async move {
         let path = concat_strings(Vec::from([
             env::temp_dir().to_str().unwrap(),
@@ -95,9 +101,9 @@ pub fn cache_next_song(url: String,index: usize ,sx: Sender<CacheItem>) {
             &uuid::Uuid::new_v4().to_string(),
         ]));
         let path2 = path.to_string();
-        let return_item = CacheItem{
+        let return_item = CacheItem {
             path: path2,
-            index: index
+            index: index,
         };
         IS_CACHING.store(true, std::sync::atomic::Ordering::SeqCst);
         let cli = Client::new();

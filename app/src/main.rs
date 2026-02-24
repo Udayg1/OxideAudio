@@ -606,7 +606,6 @@ async fn main() {
                                         .and_then(Value::as_str)
                                         .unwrap()
                                         .to_string();
-                                    eprintln!("{}", app.image);
                                     if urls[current]
                                         .get("url")
                                         .and_then(Value::as_str)
