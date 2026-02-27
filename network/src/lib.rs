@@ -4,6 +4,7 @@ use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json::{Value, json};
 use std::cmp::Reverse;
 use std::io::Write;
+use regex::Regex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
@@ -162,30 +163,53 @@ pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
 
 pub fn set_url() {
     tokio::spawn(async {
-        let js_url = "https://tidal.squid.wtf/_app/immutable/chunks/DuHawVqQ.js";
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .user_agent(AGENT)
-            .build()
-            .unwrap();
-        let mut res = client
-            .get(js_url)
-            .header(REFERER, "https://tidal.squid.wtf")
+        let cli = reqwest::Client::new();
+        let res = cli
+            .get("https://tidal.squid.wtf")
             .send()
-            .await;
-        let mut count = 0;
-        while res.is_err() && count <= 5 {
-            res = client
-                .get(js_url)
-                .header(REFERER, "https://tidal.squid.wtf")
-                .send()
-                .await;
-            count += 1;
+            .await
+            .unwrap();
+        let text = res.text().await.unwrap();
+        // println!("{text}");
+        let mut idx = 0;
+        let mut end = text.len();
+        match text.find("/app.") {
+            Some(e) => {idx = e},
+            _ => {}
         }
-        let js_obj = res.unwrap().text().await.unwrap();
-        let sind = js_obj.find("J=").unwrap() + 2;
-        let eind = &js_obj[sind + 1..].find("}]").unwrap() + 3 + sind;
-        let arr = &js_obj[sind..eind];
+        match text[idx..].find("\")"){
+            Some(e) => {end = e+idx}
+            _ => {}
+        }
+        let app = &text[idx+1..end];
+        let res = cli.get(concat_strings(Vec::from(["https://tidal.squid.wtf/_app/immutable/entry/", app]))).send().await.unwrap();
+        let text = res.text().await.unwrap();
+        // println!("{text}");
+        let re = Regex::new(r#"\.\./chunks/[^"]+"#).unwrap();
+        let mut jses = Vec::new();
+        for mat in re.find_iter(&text) {
+            jses.push(mat.as_str().strip_prefix("../chunks/").unwrap());
+        }
+        let mut count = 0;
+        let mut arr = String::new();
+        loop{
+            let res = (cli.get(concat_strings(Vec::from(["https://tidal.squid.wtf/_app/immutable/chunks/", jses[count]])))).send().await;
+            count+=1;
+            if res.is_err(){
+                continue;
+            }
+            let text = res.unwrap().text().await.unwrap();
+            let index = text.find("J=[{");
+            match index{
+                Some(e) =>{let idxx = e;
+                    let end = text[idxx+2..].find("}]").unwrap()+idxx+2;
+                    let _ = arr;
+                    arr = text[idxx+2..end+2].to_string();
+                    break;
+                }
+                _ => {continue;}
+            }
+        }
         let mut s = arr.to_string();
         s = s.replace("!1", "false");
         s = s.replace("!0", "true");

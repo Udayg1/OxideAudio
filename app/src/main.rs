@@ -641,7 +641,7 @@ async fn main() {
                                     app.dirty = true;
                                     continue;
                                 }
-                                if QUERYBASE.get().is_none() {
+                                while QUERYBASE.get().is_none() {
                                     continue;
                                 }
                                 let mut ress = search_result(&app.search_query).await;
