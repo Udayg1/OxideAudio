@@ -259,9 +259,15 @@ async fn main() {
                         .to_string(),
                 );
                 player_num = 2;
-                dura = mpv2.get_property("duration").unwrap();
+                match mpv2.get_property::<f64>("duration") {
+                    Ok(e) => dura = e,
+                    Err(_) => {}
+                }
+                match mpv2.get_property::<f64>("time-pos") {
+                    Ok(e) => tim = e,
+                    Err(_) => {}
+                }
                 app.dur = dura.round() as i64;
-                tim = mpv2.get_property("time-pos").unwrap();
                 app.cur_time = tim.round() as i64;
             } else if player_num == 2 {
                 crossfade(
@@ -274,8 +280,14 @@ async fn main() {
                         .to_string(),
                 );
                 player_num = 1;
-                dura = mpv.get_property("duration").unwrap();
-                tim = mpv.get_property("time-pos").unwrap();
+                match mpv.get_property::<f64>("duration") {
+                    Ok(e) => dura = e,
+                    Err(_) => {}
+                }
+                match mpv.get_property::<f64>("time-pos") {
+                    Ok(e) => tim = e,
+                    Err(_) => {}
+                }
                 app.cur_time = tim.round() as i64;
                 app.dur = dura.round() as i64;
             }
@@ -351,7 +363,6 @@ async fn main() {
                                 continue;
                             }
                             let json = newvec.get(0).unwrap();
-                            eprintln!("{e} ---- {json}");
                             app.channel_count =
                                 json.get("audio-channels").and_then(Value::as_i64).unwrap();
                             app.sample_rate = json
@@ -376,9 +387,16 @@ async fn main() {
                                         app.bitrate = 0;
                                         continue;
                                     }
-                                    app.bitrate = app.sample_rate
-                                        * app.channel_count
-                                        * if format.unwrap() == "s16" { 16 } else { 24 }
+                                    if qual == "HIGH" {
+                                        app.bitrate = 320;
+                                    } else if qual == "LOW" {
+                                        app.bitrate = 96;
+                                    } else {
+                                        let form = format.unwrap();
+                                        app.bitrate = app.sample_rate
+                                            * app.channel_count
+                                            * if form == "s16" { 16 } else { 24 }
+                                    }
                                 }
                             }
                         }
@@ -417,8 +435,6 @@ async fn main() {
                                 continue;
                             }
                             let json = newvec.get(0).unwrap();
-                            eprintln!("{e} ---- {json}");
-
                             app.channel_count =
                                 json.get("audio-channels").and_then(Value::as_i64).unwrap();
                             app.sample_rate = json
@@ -443,9 +459,16 @@ async fn main() {
                                         app.bitrate = 0;
                                         continue;
                                     }
-                                    app.bitrate = app.sample_rate
-                                        * app.channel_count
-                                        * if format.unwrap() == "s16" { 16 } else { 24 }
+                                    if qual == "HIGH" {
+                                        app.bitrate = 320;
+                                    } else if qual == "LOW" {
+                                        app.bitrate = 96;
+                                    } else {
+                                        let form = format.unwrap();
+                                        app.bitrate = app.sample_rate
+                                            * app.channel_count
+                                            * if form == "s16" { 16 } else { 24 }
+                                    }
                                 }
                             }
                         }
