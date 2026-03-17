@@ -1,10 +1,10 @@
 use macros::*;
+use regex::Regex;
 use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json::{Value, json};
 use std::cmp::Reverse;
 use std::io::Write;
-use regex::Regex;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
@@ -164,25 +164,28 @@ pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
 pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
-        let res = cli
-            .get("https://tidal.squid.wtf")
-            .send()
-            .await
-            .unwrap();
+        let res = cli.get("https://tidal.squid.wtf").send().await.unwrap();
         let text = res.text().await.unwrap();
         // println!("{text}");
         let mut idx = 0;
         let mut end = text.len();
         match text.find("/app.") {
-            Some(e) => {idx = e},
+            Some(e) => idx = e,
             _ => {}
         }
-        match text[idx..].find("\")"){
-            Some(e) => {end = e+idx}
+        match text[idx..].find("\")") {
+            Some(e) => end = e + idx,
             _ => {}
         }
-        let app = &text[idx+1..end];
-        let res = cli.get(concat_strings(Vec::from(["https://tidal.squid.wtf/_app/immutable/entry/", app]))).send().await.unwrap();
+        let app = &text[idx + 1..end];
+        let res = cli
+            .get(concat_strings(Vec::from([
+                "https://tidal.squid.wtf/_app/immutable/entry/",
+                app,
+            ])))
+            .send()
+            .await
+            .unwrap();
         let text = res.text().await.unwrap();
         // println!("{text}");
         let re = Regex::new(r#"\.\./chunks/[^"]+"#).unwrap();
@@ -192,22 +195,30 @@ pub fn set_url() {
         }
         let mut count = 0;
         let mut arr = String::new();
-        loop{
-            let res = (cli.get(concat_strings(Vec::from(["https://tidal.squid.wtf/_app/immutable/chunks/", jses[count]])))).send().await;
-            count+=1;
-            if res.is_err(){
+        loop {
+            let res = (cli.get(concat_strings(Vec::from([
+                "https://tidal.squid.wtf/_app/immutable/chunks/",
+                jses[count],
+            ]))))
+            .send()
+            .await;
+            count += 1;
+            if res.is_err() {
                 continue;
             }
             let text = res.unwrap().text().await.unwrap();
             let index = text.find("J=[{");
-            match index{
-                Some(e) =>{let idxx = e;
-                    let end = text[idxx+2..].find("}]").unwrap()+idxx+2;
+            match index {
+                Some(e) => {
+                    let idxx = e;
+                    let end = text[idxx + 2..].find("}]").unwrap() + idxx + 2;
                     let _ = arr;
-                    arr = text[idxx+2..end+2].to_string();
+                    arr = text[idxx + 2..end + 2].to_string();
                     break;
                 }
-                _ => {continue;}
+                _ => {
+                    continue;
+                }
             }
         }
         let mut s = arr.to_string();
@@ -219,6 +230,23 @@ pub fn set_url() {
         }
         let mut json_arr: Vec<Value> = serde_json::from_str(&s).unwrap();
         json_arr.sort_by_key(|x| Reverse(x.get("weight").and_then(Value::as_i64)));
+        let mut res = cli
+            .get(concat_strings(Vec::from([
+                json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+                "/search/?s=vaar",
+            ])))
+            .send()
+            .await.unwrap().error_for_status();
+        while res.is_err() {
+            json_arr.remove(0);
+            res = cli
+                .get(concat_strings(Vec::from([
+                    json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+                    "/search/?s=vaar",
+                ])))
+                .send()
+                .await.unwrap().error_for_status();
+        }
         INFOSTREAM
             .set(
                 json_arr[0]
