@@ -23,30 +23,30 @@ pub struct CacheItem {
     pub index: usize,
 }
 
-pub async fn get_image(path_str: &str) -> String {
-    let full_path = concat_strings(Vec::from([
-        "https://resources.tidal.com/images/",
-        &path_str.split("-").collect::<Vec<&str>>().join("/"),
-        "/640x640.jpg",
-    ]));
-    let client = Client::new();
-    let res = client
-        .get(full_path)
-        .header(USER_AGENT, AGENT)
-        .send()
-        .await
-        .unwrap()
-        .bytes()
-        .await
-        .unwrap();
-    let mut path = String::new();
-    path += env::temp_dir().to_str().unwrap();
-    path += "/";
-    path += &uuid::Uuid::new_v4().to_string();
-    path += ".jpg";
-    fs::write(&path, res).unwrap();
-    path
-}
+// pub async fn get_image(path_str: &str) -> String {
+//     let full_path = concat_strings(Vec::from([
+//         "https://resources.tidal.com/images/",
+//         &path_str.split("-").collect::<Vec<&str>>().join("/"),
+//         "/640x640.jpg",
+//     ]));
+//     let client = Client::new();
+//     let res = client
+//         .get(full_path)
+//         .header(USER_AGENT, AGENT)
+//         .send()
+//         .await
+//         .unwrap()
+//         .bytes()
+//         .await
+//         .unwrap();
+//     let mut path = String::new();
+//     path += env::temp_dir().to_str().unwrap();
+//     path += "/";
+//     path += &uuid::Uuid::new_v4().to_string();
+//     path += ".jpg";
+//     fs::write(&path, res).unwrap();
+//     path
+// }
 
 pub async fn get_quality(id: &str) -> Value {
     let cli = Client::builder()

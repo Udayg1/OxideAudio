@@ -34,11 +34,6 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
         .and_then(Value::as_str)
         .unwrap()
         .to_string();
-    app.image = urls[*current]
-        .get("image")
-        .and_then(Value::as_str)
-        .unwrap()
-        .to_string();
     if urls[*current]
         .get("url")
         .and_then(Value::as_str)
@@ -85,11 +80,6 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
         *current -= 1;
         app.status = urls[*current]
             .get("name")
-            .and_then(Value::as_str)
-            .unwrap()
-            .to_string();
-        app.image = urls[*current]
-            .get("image")
             .and_then(Value::as_str)
             .unwrap()
             .to_string();
@@ -233,11 +223,6 @@ async fn main() {
                 .and_then(Value::as_str)
                 .unwrap()
                 .to_string();
-            app.image = urls[current]
-                .get("image")
-                .and_then(Value::as_str)
-                .unwrap()
-                .to_string();
             app.queue_len = (urls.len() - current - 1) as i64;
             if current != urls.len() {
                 terminal
@@ -307,12 +292,16 @@ async fn main() {
             }
         }
         if urls.len() > current + 1 {
-            if !check_song(urls[current + 1].get("id").and_then(Value::as_str).unwrap())
-                && !urls[current + 1]
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .starts_with("/")
+            if !urls[current + 1]
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap()
+                .starts_with("/")
+                && if player_num == 1 {
+                    mpv.get_property::<i64>("percent-pos").unwrap() > 30
+                } else {
+                    mpv2.get_property::<i64>("percent-pos").unwrap() > 30
+                }
             {
                 if save {
                     if !IS_CACHING.load(Ordering::SeqCst) {
@@ -716,12 +705,6 @@ async fn main() {
                                     }
                                     app.status = urls[current]
                                         .get("name")
-                                        .and_then(Value::as_str)
-                                        .unwrap()
-                                        .to_string();
-
-                                    app.image = urls[current]
-                                        .get("image")
                                         .and_then(Value::as_str)
                                         .unwrap()
                                         .to_string();

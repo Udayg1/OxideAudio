@@ -324,7 +324,7 @@ pub async fn add_song(
                         .get("artist")
                         .and_then(|v| v.get("name").and_then(Value::as_str))
                         .unwrap_or("Unknown"),
-                ])), "id": id.to_string(), "image": get_image(track.get("album").and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()).await}),
+                ])), "id": id.to_string(), "image": "hi"}),
             );
         } else {
             let pref = PREF_QUAL.get().unwrap();
@@ -356,7 +356,7 @@ pub async fn add_song(
                         .get("artist")
                         .and_then(|v| v.get("name").and_then(Value::as_str))
                         .unwrap_or("Unknown"),
-                ])), "id": id.to_string(), "image": get_image(track.get("album").and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()).await}),
+                ])), "id": id.to_string(), "image": "hi"}),
                 );
             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                 if let Some(url) = json
@@ -381,7 +381,7 @@ pub async fn add_song(
                             .get("artist")
                             .and_then(|v| v.get("name").and_then(Value::as_str))
                             .unwrap_or("Unknown"),
-                    ])), "id": id.to_string(), "image": get_image(track.get("album").and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()).await}),
+                    ])), "id": id.to_string(), "image": "hi"}),
                     );
                 }
             }
