@@ -3,7 +3,6 @@ use regex::Regex;
 use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json::{Value, json};
-use std::cmp::Reverse;
 use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
@@ -164,93 +163,51 @@ pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
 pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
-        let res = cli.get("https://tidal.squid.wtf").send().await.unwrap();
+        let res = cli.get("https://monochrome.tf").send().await.unwrap();
         let text = res.text().await.unwrap();
-        // println!("{text}");
-        let mut idx = 0;
-        let mut end = text.len();
-        match text.find("/app.") {
-            Some(e) => idx = e,
-            _ => {}
+        // eprintln!("{text}")
+        let re = regex::Regex::new(r"assets/index-[^/]+\.js").unwrap();
+        let mut indexjs = "";
+        for m in re.find_iter(&text) {
+            indexjs = m.as_str();
+            break;
         }
-        match text[idx..].find("\")") {
-            Some(e) => end = e + idx,
-            _ => {}
-        }
-        let app = &text[idx + 1..end];
         let res = cli
             .get(concat_strings(Vec::from([
-                "https://tidal.squid.wtf/_app/immutable/entry/",
-                app,
+                "https://monochrome.tf/",
+                indexjs,
             ])))
             .send()
             .await
             .unwrap();
         let text = res.text().await.unwrap();
-        // println!("{text}");
-        let re = Regex::new(r#"\.\./chunks/[^"]+"#).unwrap();
-        let mut jses = Vec::new();
-        for mat in re.find_iter(&text) {
-            jses.push(mat.as_str().strip_prefix("../chunks/").unwrap());
-        }
-        let mut count = 0;
-        let mut arr = String::new();
-        loop {
-            let res = (cli.get(concat_strings(Vec::from([
-                "https://tidal.squid.wtf/_app/immutable/chunks/",
-                jses[count],
-            ]))))
-            .send()
-            .await;
-            count += 1;
-            if res.is_err() {
-                continue;
-            }
-            let text = res.unwrap().text().await.unwrap();
-            let index = text.find("J=[{");
-            match index {
-                Some(e) => {
-                    let idxx = e;
-                    let end = text[idxx + 2..].find("}]").unwrap() + idxx + 2;
-                    let _ = arr;
-                    arr = text[idxx + 2..end + 2].to_string();
-                    break;
-                }
-                _ => {
-                    continue;
-                }
-            }
-        }
-        let mut s = arr.to_string();
-        s = s.replace("!1", "false");
-        s = s.replace("!0", "true");
+        // eprintln!("{text}");
+        let re = Regex::new(r#"INSTANCES_URLS:*\[([^\]]+)\]"#).unwrap();
+        let mut arr = Vec::new();
+        if let Some(caps) = re.captures(&text) {
+            let inner = &caps[1];
 
-        for key in ["name", "baseUrl", "weight", "requiresProxy", "category"] {
-            s = s.replace(&format!("{key}:"), &format!("\"{key}\":"));
+            // extract individual URLs
+            let url_re = Regex::new(r#""([^"]+)""#).unwrap();
+
+            arr = url_re
+                .captures_iter(inner)
+                .map(|c| c.get(1).unwrap().as_str().to_string())
+                .collect::<Vec<String>>();
         }
-        let mut json_arr: Vec<Value> = serde_json::from_str(&s).unwrap();
-        json_arr.sort_by_key(|x| Reverse(x.get("weight").and_then(Value::as_i64)));
-        let mut res = cli
-            .get(concat_strings(Vec::from([
-                json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
-                "/search/?s=vaar",
-            ])))
-            .send()
-            .await.unwrap().error_for_status();
-        while res.is_err() {
-            json_arr.remove(0);
-            res = cli
-                .get(concat_strings(Vec::from([
-                    json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
-                    "/search/?s=vaar",
-                ])))
-                .send()
-                .await.unwrap().error_for_status();
+        let mut url_json = Vec::new();
+        for i in arr {
+            let res = cli.get(i).send().await.unwrap();
+            let text = res.text().await.unwrap();
+            let js = serde_json::from_str::<Value>(&text).unwrap();
+            let jss = js.get("streaming").and_then(Value::as_array).unwrap();
+            url_json.append(&mut jss.clone());
+            break;
         }
         INFOSTREAM
             .set(
-                json_arr[0]
-                    .get("baseUrl")
+                url_json[0]
+                    .get("url")
                     .and_then(Value::as_str)
                     .unwrap()
                     .to_string(),
@@ -258,13 +215,13 @@ pub fn set_url() {
             .unwrap();
         STREAM
             .set(concat_strings(Vec::from([
-                json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+                url_json[0].get("url").and_then(Value::as_str).unwrap(),
                 "/track/?",
             ])))
             .unwrap();
         QUERYBASE
             .set(concat_strings(Vec::from([
-                json_arr[0].get("baseUrl").and_then(Value::as_str).unwrap(),
+                url_json[0].get("url").and_then(Value::as_str).unwrap(),
                 "/search/?s=",
             ])))
             .unwrap();

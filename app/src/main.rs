@@ -138,10 +138,10 @@ async fn main() {
             }
         }
     }
+    set_url();
     PREF_QUAL
         .set(qual.to_string())
         .expect("Quality already specified");
-    set_url();
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
     let (cache_send, cache_recv): (Sender<CacheItem>, Receiver<CacheItem>) = mpsc::channel();
