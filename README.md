@@ -42,7 +42,7 @@ cargo build --release
 ## ▶️ Usage
 
 ``` bash
-cargo run --release
+cargo run --release 
 ```
 
 ------------------------------------------------------------------------

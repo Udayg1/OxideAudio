@@ -471,7 +471,7 @@ async fn main() {
             && mpv2.get_property::<bool>("idle-active").unwrap()
             && urls.len() >= current + 1
         {
-            if last_mode_switch.elapsed() >= skip_every {
+            if last_mode_switch.elapsed() >= skip_every + Duration::from_secs(3) {
                 app.cur_time = 0;
                 app.dur = 0;
                 if player_num == 1 {
