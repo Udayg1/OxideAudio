@@ -32,7 +32,7 @@ layer in Rust.
 ## 📦 Installation
 
 ``` bash
-git clone https://github.com/yourusername/oxideaudio.git
+git clone https://github.com/Udayg1/oxideaudio.git
 cd oxideaudio
 cargo build --release
 ```
@@ -42,7 +42,7 @@ cargo build --release
 ## ▶️ Usage
 
 ``` bash
-cargo run
+cargo run --release
 ```
 
 ------------------------------------------------------------------------
