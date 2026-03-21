@@ -12,12 +12,10 @@ use std::{env, fs};
 use uuid;
 
 pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
-pub static QUERYBASE: OnceLock<String> = OnceLock::new();
-pub static STREAM: OnceLock<String> = OnceLock::new();
 pub static INFOSTREAM: OnceLock<String> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
-
+pub static FALLBACK: OnceLock<String> = OnceLock::new();
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
@@ -48,19 +46,49 @@ pub struct CacheItem {
 //     path
 // }
 
+pub fn api_head(initator: &str, main: bool) -> String {
+    if initator == "track" {
+        if main {
+            concat_strings(Vec::from([
+                &INFOSTREAM.get().unwrap().to_string(),
+                "/track/?",
+            ]))
+        } else {
+            concat_strings(Vec::from([
+                &FALLBACK.get().unwrap().to_string(),
+                "/track/?",
+            ]))
+        }
+    } else if initator == "search" {
+        if main {
+            concat_strings(Vec::from([
+                &INFOSTREAM.get().unwrap().to_string(),
+                "/search/?s=",
+            ]))
+        } else {
+            concat_strings(Vec::from([
+                &FALLBACK.get().unwrap().to_string(),
+                "/search/?s=",
+            ]))
+        }
+    } else {
+        if main {
+            INFOSTREAM.get().unwrap().to_string()
+        } else {
+            FALLBACK.get().unwrap().to_string()
+        }
+    }
+}
+
 pub async fn get_quality(id: &str) -> Value {
+    let url = concat_strings(Vec::from([&api_head("none", true), "/info/?id=", id]));
     let cli = Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
     let res = cli
-        .get(concat_strings(Vec::from([
-            INFOSTREAM.get().unwrap(),
-            "/info/?id=",
-            id,
-        ])))
+        .get(url)
         .header(USER_AGENT, AGENT)
-        .header(REFERER, "https://tidal.squid.wtf/")
         .send()
         .await
         .unwrap()
@@ -77,7 +105,6 @@ pub async fn get_quality(id: &str) -> Value {
         if quality == "LOSSLESS" && (pref == "HIGH" || pref == "LOW") {
             return json!({"quality":pref.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()});
         }
-
         let tags = res
             .get("data")
             .and_then(|v| v.get("mediaMetadata"))
@@ -89,7 +116,34 @@ pub async fn get_quality(id: &str) -> Value {
         }
         json!({"quality":quality.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
     } else {
-        json!({"quality":"".to_string(), "image": ""})
+        let url = concat_strings(Vec::from([&api_head("none", false), "/info/?id=", id]));
+        let res = cli
+            .get(url)
+            .header(USER_AGENT, AGENT)
+            .send()
+            .await
+            .unwrap()
+            .json::<Value>()
+            .await
+            .unwrap();
+        if !qual.is_none() {
+            let mut quality = qual.unwrap();
+            if quality == "LOSSLESS" && (pref == "HIGH" || pref == "LOW") {
+                return json!({"quality":pref.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()});
+            }
+            let tags = res
+                .get("data")
+                .and_then(|v| v.get("mediaMetadata"))
+                .and_then(|v| v.get("tags"))
+                .and_then(Value::as_array)
+                .unwrap();
+            if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")) {
+                quality = "HI_RES_LOSSLESS";
+            }
+            json!({"quality":quality.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
+        } else {
+            json!({"quality": "", "image": ""})
+        }
     }
 }
 
@@ -206,31 +260,32 @@ pub fn set_url() {
         }
         INFOSTREAM
             .set(
-                url_json[0]
+                url_json
+                    .first()
+                    .unwrap()
                     .get("url")
                     .and_then(Value::as_str)
                     .unwrap()
                     .to_string(),
             )
             .unwrap();
-        STREAM
-            .set(concat_strings(Vec::from([
-                url_json[0].get("url").and_then(Value::as_str).unwrap(),
-                "/track/?",
-            ])))
-            .unwrap();
-        QUERYBASE
-            .set(concat_strings(Vec::from([
-                url_json[0].get("url").and_then(Value::as_str).unwrap(),
-                "/search/?s=",
-            ])))
+        FALLBACK
+            .set(
+                url_json
+                    .last()
+                    .unwrap()
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+            )
             .unwrap();
     });
 }
 
 pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
     let fin_url = concat_strings(Vec::from([
-        STREAM.get().unwrap(),
+        &api_head("track", true),
         "id=",
         &id.to_string(),
         "&quality=",
@@ -240,34 +295,61 @@ pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Er
         .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
-    let body: Value = client
+    let mut body = client
         .get(fin_url)
         .header(USER_AGENT, AGENT)
         .send()
-        .await?
-        .json()
-        .await?;
-    Ok(body)
+        .await
+        .unwrap()
+        .error_for_status();
+    if body.is_err() {
+        let fin_url = concat_strings(Vec::from([
+            &api_head("track", false),
+            "id=",
+            &id.to_string(),
+            "&quality=",
+            audio_quality,
+        ]));
+        body = client
+            .get(fin_url)
+            .header(USER_AGENT, AGENT)
+            .send()
+            .await?
+            .error_for_status();
+    }
+    Ok(body?.json().await?)
 }
 
 pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let s: Vec<&str> = query.split(' ').collect();
     let q = concat_strings(Vec::from([
-        QUERYBASE.get().unwrap(),
+        &api_head("search", true),
         s.join("%20").as_str(),
     ]));
     let client = Client::builder()
         .connect_timeout(Duration::from_secs(5))
         .build()
         .unwrap();
-    let body: Value = client
+    let mut body = client
         .get(q)
         .header(USER_AGENT, AGENT)
         .send()
-        .await?
-        .json()
-        .await?;
-    Ok(body)
+        .await
+        .unwrap()
+        .error_for_status();
+    if body.is_err() {
+        let q = concat_strings(Vec::from([
+            &api_head("search", false),
+            s.join("%20").as_str(),
+        ]));
+        body = client
+            .get(q)
+            .header(USER_AGENT, AGENT)
+            .send()
+            .await?
+            .error_for_status();
+    }
+    Ok(body?.json().await?)
 }
 
 pub async fn get_songlink_data(id: &str, source: &str) -> Value {

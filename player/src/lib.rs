@@ -242,6 +242,7 @@ pub fn queue_mpd_song(mpv: &mut Mpv, mpd: &str) {
         &env::temp_dir().display().to_string(),
         "/mpd_",
         &uuid::Uuid::new_v4().to_string(),
+        ".mpd",
     ]));
     let mut f = OpenOptions::new()
         .write(true)

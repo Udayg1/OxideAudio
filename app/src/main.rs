@@ -156,7 +156,9 @@ async fn main() {
     )
     .unwrap();
     // mpv.set_property("msg-level", "all=debug").unwrap();
-    // mpv.set_property("log-file", log_file_location.to_string()).unwrap();
+    // mpv.set_property("log-file", "./mpv.log").unwrap();
+    // mpv2.set_property("log-file", "./mpv2.log").unwrap();
+
     let mut terminal = setup_terminal();
     let mut urls: Vec<Value> = Vec::new();
     let mut current = 0;
@@ -630,7 +632,7 @@ async fn main() {
                                     app.dirty = true;
                                     continue;
                                 }
-                                while QUERYBASE.get().is_none() {
+                                while INFOSTREAM.get().is_none() {
                                     continue;
                                 }
                                 let mut ress = search_result(&app.search_query).await;
