@@ -298,9 +298,9 @@ async fn main() {
                 .unwrap()
                 .starts_with("/")
                 && if player_num == 1 {
-                    mpv.get_property::<i64>("percent-pos").unwrap() > 30
+                    mpv.get_property::<i64>("percent-pos").unwrap_or(0) > 30
                 } else {
-                    mpv2.get_property::<i64>("percent-pos").unwrap() > 30
+                    mpv2.get_property::<i64>("percent-pos").unwrap_or(0) > 30
                 }
             {
                 if save {
