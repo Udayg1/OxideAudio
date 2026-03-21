@@ -71,6 +71,7 @@ control** with **mpv's mature media capabilities**.
     ├── app/             # Entry point
     ├── player/          # mpv integration & playback control
     ├── network/         # Streaming & fetching logic
+    ├── ui/              # TUI implementation
     └── macros/          # Heavy macro expansion
 
 ------------------------------------------------------------------------
