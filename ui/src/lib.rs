@@ -103,6 +103,11 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
     let mut text = String::new();
     text += " >> ";
     if !app.status.starts_with("Nothing") {
+        if !app.paused {
+            text += "▶︎ "
+        } else {
+            text += "⏸ "
+        }
         text += &app.status;
         text += "\n";
         if app.dur != 0 {

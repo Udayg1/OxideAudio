@@ -87,10 +87,10 @@ control** with **mpv's mature media capabilities**.
 
 ## 🧪 Future Improvements
 
--   [ ] Playlist support\
--   [ ] Local file playback\
+-   [x] Playlist support\
+-   [x] Local file playback\
 -   [ ] Better error handling (network failures, retries)\
--   [ ] CLI controls (pause, skip, seek)\
+-   [x] CLI controls (pause, skip, seek)\
 -   [ ] Improved buffering strategy\
 -   [ ] GUI frontend
 
@@ -100,9 +100,3 @@ control** with **mpv's mature media capabilities**.
 
 Contributions are welcome! Feel free to open issues or submit pull
 requests.
-
-------------------------------------------------------------------------
-
-## 📄 License
-
-MIT License

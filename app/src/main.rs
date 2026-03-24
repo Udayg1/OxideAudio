@@ -87,7 +87,11 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
         app.dirty = true;
     } else if !mpv.get_property::<bool>("idle-active").unwrap() {
         match mpv.command("seek", &["0", "absolute"]) {
-            Ok(_) => {}
+            Ok(_) => {
+                app.dur = 0;
+                app.dur = mpv.get_property::<f64>("duration").unwrap_or(0.0) as i64;
+                app.dirty = true;
+            }
             Err(_) => {}
         }
     }
@@ -151,6 +155,11 @@ async fn main() {
     };
     let mut mpv2 = Mpv::new().unwrap();
     mpv.set_property(
+        "demuxer-lavf-o",
+        "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
+    )
+    .unwrap();
+    mpv2.set_property(
         "demuxer-lavf-o",
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
@@ -550,7 +559,6 @@ async fn main() {
                             KeyCode::Char('r') => {
                                 _skipped = true;
                                 app.cur_time = 0;
-                                app.dur = 0;
                                 if player_num == 1 {
                                     rewind_playback(&mut mpv, &urls, &mut current, &mut app);
                                 } else if player_num == 2 {
