@@ -13,6 +13,7 @@ use uuid;
 
 pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
 pub static INFOSTREAM: OnceLock<String> = OnceLock::new();
+static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
 pub static FALLBACK: OnceLock<String> = OnceLock::new();
@@ -82,13 +83,11 @@ pub fn api_head(initator: &str, main: bool) -> String {
 
 pub async fn get_quality(id: &str) -> Value {
     let url = concat_strings(Vec::from([&api_head("none", true), "/info/?id=", id]));
-    let cli = Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let cli = CLIENT.get().unwrap().clone();
     let res = cli
         .get(url)
         .header(USER_AGENT, AGENT)
+        .timeout(Duration::from_secs(7))
         .send()
         .await
         .unwrap()
@@ -258,6 +257,37 @@ pub fn set_url() {
             url_json.append(&mut jss.clone());
             break;
         }
+        match cli
+            .head(
+                url_json
+                    .first()
+                    .unwrap()
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+            )
+            .send()
+            .await
+        {
+            _ => {}
+        }
+        match cli
+            .head(
+                url_json
+                    .last()
+                    .unwrap()
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+            )
+            .send()
+            .await
+        {
+            _ => {}
+        }
+        CLIENT.set(cli).unwrap();
         INFOSTREAM
             .set(
                 url_json
@@ -291,12 +321,10 @@ pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Er
         "&quality=",
         audio_quality,
     ]));
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = CLIENT.get().unwrap().clone();
     let mut body = client
         .get(fin_url)
+        .timeout(Duration::from_secs(7))
         .header(USER_AGENT, AGENT)
         .send()
         .await
@@ -321,27 +349,23 @@ pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Er
 }
 
 pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
-    let s: Vec<&str> = query.split(' ').collect();
-    let q = concat_strings(Vec::from([
-        &api_head("search", true),
-        s.join("%20").as_str(),
-    ]));
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let s = query
+        .split(' ')
+        .collect::<Vec<&str>>()
+        .join("%20")
+        .to_string();
+    let q = concat_strings(Vec::from([&api_head("search", true), s.as_str()]));
+    let client = CLIENT.get().unwrap().clone();
     let mut body = client
         .get(q)
+        .timeout(Duration::from_secs(7))
         .header(USER_AGENT, AGENT)
         .send()
         .await
         .unwrap()
         .error_for_status();
     if body.is_err() {
-        let q = concat_strings(Vec::from([
-            &api_head("search", false),
-            s.join("%20").as_str(),
-        ]));
+        let q = concat_strings(Vec::from([&api_head("search", false), s.as_str()]));
         body = client
             .get(q)
             .header(USER_AGENT, AGENT)
@@ -354,10 +378,7 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
 
 pub async fn get_songlink_data(id: &str, source: &str) -> Value {
     let url = concat_strings(Vec::from(["https://song.link/", source, "/", id]));
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .build()
-        .unwrap();
+    let client = CLIENT.get().unwrap().clone();
     let response = client.get(&url).header(USER_AGENT, AGENT).send().await;
     if response.is_err() {
         return empty_json();
@@ -372,10 +393,7 @@ pub async fn get_songlink_data(id: &str, source: &str) -> Value {
     serde_json::from_str(&json_text).unwrap()
 }
 pub async fn convert_to_ytm(name: &str) -> Option<String> {
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = CLIENT.get().unwrap().clone();
 
     let body = query_json(name);
     let new: Vec<&str> = name.trim().split(' ').collect();
@@ -390,6 +408,7 @@ pub async fn convert_to_ytm(name: &str) -> Option<String> {
                 new.join("+").as_str(),
             ])),
         )
+        .timeout(Duration::from_secs(7))
         .json(&body)
         .send()
         .await;
@@ -483,10 +502,7 @@ pub async fn get_ytrecs(ytid: &str) -> Value {
     if ytid.is_empty() {
         return empty_json();
     }
-    let client = Client::builder()
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = CLIENT.get().unwrap().clone();
     let body = ytrecs_json(ytid);
     let mut resp = client
         .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
@@ -501,6 +517,7 @@ pub async fn get_ytrecs(ytid: &str) -> Value {
                 ytid,
             ])),
         )
+        .timeout(Duration::from_secs(7))
         .json(&body)
         .send()
         .await;
@@ -536,7 +553,10 @@ pub async fn cache_url(id: &str, url: &str) -> Option<String> {
         return Some(path);
     }
 
-    let bytes = Client::new()
+    let bytes = CLIENT
+        .get()
+        .unwrap()
+        .clone()
         .get(url)
         .send()
         .await
@@ -561,7 +581,7 @@ pub async fn cache_mpd_song(mpd_string: &str, tidal_id: &str) {
             r = &smth[3..smth.len() - 1];
         }
     }
-    let client = Client::new();
+    let client = CLIENT.get().unwrap().clone();
     init = init.replace("amp;", "");
     let new_init = init.split("$Number$").collect::<Vec<&str>>();
     let r = r.parse::<u32>().unwrap();
