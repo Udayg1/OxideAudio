@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::Alignment,
     widgets::{Clear, List, ListItem},
 };
 use serde_json::Value;
@@ -161,14 +161,18 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
     f.render_widget(header, chunks[0]);
     f.render_widget(footer, chunks[2]);
     if matches!(app.mode, UiMode::Search | UiMode::Results) {
-        let area = centered_rect(60, 60, f.area());
+        let area = chunks[1];
         f.render_widget(Clear, area);
 
         match app.mode {
             UiMode::Search => {
                 let input = Paragraph::new(app.search_query.to_string() + "_")
                     .alignment(Alignment::Left)
-                    .block(Block::default().borders(Borders::ALL).title("Search"));
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("[ Search - Enter the query ]"),
+                    );
                 f.render_widget(input, area);
             }
             UiMode::Results => {
@@ -227,8 +231,8 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
                     })
                     .collect();
 
-                let list =
-                    List::new(items).block(Block::default().borders(Borders::ALL).title("Results"));
+                let list = List::new(items)
+                    .block(Block::default().borders(Borders::ALL).title("[ Results ]"));
 
                 f.render_widget(list, area);
             }
@@ -237,22 +241,22 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
     }
 }
 
-pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
+// pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+//     let popup_layout = Layout::default()
+//         .direction(Direction::Vertical)
+//         .constraints([
+//             Constraint::Percentage((100 - percent_y) / 2),
+//             Constraint::Percentage(percent_y),
+//             Constraint::Percentage((100 - percent_y) / 2),
+//         ])
+//         .split(r);
 
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
-}
+//     Layout::default()
+//         .direction(Direction::Horizontal)
+//         .constraints([
+//             Constraint::Percentage((100 - percent_x) / 2),
+//             Constraint::Percentage(percent_x),
+//             Constraint::Percentage((100 - percent_x) / 2),
+//         ])
+//         .split(popup_layout[1])[1]
+// }

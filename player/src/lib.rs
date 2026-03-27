@@ -2,6 +2,8 @@ use base64::{Engine as _, engine::general_purpose};
 use libmpv2::Mpv;
 use macros::*;
 use network::*;
+use rand::rng;
+use rand::seq::SliceRandom;
 use serde_json::{Value, json};
 use std::io::{Write, stderr};
 use std::sync::atomic::AtomicBool;
@@ -53,15 +55,15 @@ pub fn crossfade(mpv1: &mut Mpv, mpv2: &mut Mpv, new_song: String) {
         let vol1 = (1.0 - progress) * cur_vol;
         let vol2 = progress * cur_vol; // or 100.0 if you want full next track
 
-        mpv1.set_property("volume", vol1).unwrap();
-        mpv2.set_property("volume", vol2).unwrap();
+        mpv1.set_property("volume", vol1).unwrap_or(());
+        mpv2.set_property("volume", vol2).unwrap_or(());
 
         std::thread::sleep(Duration::from_millis(10));
     }
 
     // Ensure volumes are correct at the end
-    mpv1.set_property("volume", 0.0).unwrap();
-    mpv2.set_property("volume", cur_vol).unwrap();
+    mpv1.set_property("volume", 0.0).unwrap_or(());
+    mpv2.set_property("volume", cur_vol).unwrap_or(());
 }
 
 pub fn check_song(id: &str) -> bool {
@@ -108,7 +110,8 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
             IS_RUNNING.store(true, Ordering::SeqCst);
             let new_iid = convert_to_ytm(&name).await.unwrap();
             let njson = get_ytrecs(&new_iid).await;
-            let arr = get_ytrec_array(njson);
+            let mut arr = get_ytrec_array(njson);
+            arr.shuffle(&mut rng());
             stderr().flush().unwrap();
             let mut count = 0;
             for item in arr.iter() {
