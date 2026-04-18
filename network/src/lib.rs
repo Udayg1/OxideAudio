@@ -112,7 +112,6 @@ pub async fn get_quality(id: &str) -> Value {
         }
     }
     let res = resp.expect("Status error");
-    eprintln!("{res}");
     let qual = res
         .get("data")
         .and_then(|v| v.get("audioQuality"))
