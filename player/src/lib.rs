@@ -165,7 +165,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 "/.local/share/mscply/songs/",
                                 &tidal_id_final,
                             ])), "name":
-                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final, "image": image})
+                            concat_strings(Vec::from([name, " - ", artist])), "duration":quality_json.get("duration").and_then(Value::as_i64).unwrap() ,"id" : tidal_id_final, "image": image})
                         ))
                         .ok();
                         continue;
@@ -190,7 +190,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 if *SAVE_DATA.get().unwrap_or(&true) {
                                     tx.send(QueueItem::Url(json!({"url":
                                         decoded.to_string(), "name":
-                                        concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image})))
+                                        concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image, "duration":quality_json.get("duration").and_then(Value::as_i64).unwrap() })))
                                     .ok();
                                     continue;
                                 }
@@ -201,7 +201,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                                                 "/.local/share/mscply/songs/",
                                                                 &tidal_id_final,
                                                             ])), "name":
-                                                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image})))
+                                                            concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image, "duration":quality_json.get("duration").and_then(Value::as_i64).unwrap()})))
                                 .ok();
                             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                                 if let Some(url) = json
@@ -213,7 +213,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                     if *SAVE_DATA.get().unwrap_or(&true) {
                                         tx.send(QueueItem::Url(json!({"url":
                                             url.to_string(), "name":
-                                                                    concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image})))
+                                                                    concat_strings(Vec::from([name, " - ", artist])), "id" : tidal_id_final.to_string(), "image": image, "duration":quality_json.get("duration").and_then(Value::as_i64).unwrap()})))
                                         .ok();
                                         continue;
                                     }
@@ -328,7 +328,7 @@ pub async fn add_song(
                         .get("artist")
                         .and_then(|v| v.get("name").and_then(Value::as_str))
                         .unwrap_or("Unknown"),
-                ])), "id": id.to_string(), "image": "hi"}),
+                ])), "id": id.to_string(), "image": "hi", "duration": track.get("duration").and_then(Value::as_i64).unwrap_or(0)}),
             );
         } else {
             let pref = PREF_QUAL.get().unwrap();
@@ -360,7 +360,7 @@ pub async fn add_song(
                         .get("artist")
                         .and_then(|v| v.get("name").and_then(Value::as_str))
                         .unwrap_or("Unknown"),
-                ])), "id": id.to_string(), "image": "hi"}),
+                ])), "id": id.to_string(), "image": "hi", "duration": track.get("duration").and_then(Value::as_i64).unwrap_or(0)}),
                 );
             } else if let Ok(json) = serde_json::from_str::<Value>(&decoded) {
                 if let Some(url) = json
@@ -385,7 +385,7 @@ pub async fn add_song(
                             .get("artist")
                             .and_then(|v| v.get("name").and_then(Value::as_str))
                             .unwrap_or("Unknown"),
-                    ])), "id": id.to_string(), "image": "hi"}),
+                    ])), "id": id.to_string(), "image": "hi", "duration": track.get("duration").and_then(Value::as_i64).unwrap_or(0)}),
                     );
                 }
             }

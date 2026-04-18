@@ -19,6 +19,7 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
     if *current + 1 >= urls.len() {
         app.status = "Nothing is playing".to_string();
         app.queue_len = 0;
+        app.dur = 0;
         app.dirty = true;
         *current = urls.len();
         if !mpv.get_property::<bool>("idle-active").unwrap() {
@@ -29,6 +30,10 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
 
     *current += 1;
     app.queue_len = (urls.len() - *current - 1) as i64;
+    app.dur = match urls[*current].get("duration").and_then(Value::as_i64) {
+        Some(e) => e,
+        None => 0,
+    };
     app.status = urls[*current]
         .get("name")
         .and_then(Value::as_str)
@@ -78,6 +83,10 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
             );
         }
         *current -= 1;
+        app.dur = match urls[*current].get("duration").and_then(Value::as_i64) {
+            Some(e) => e,
+            None => 0,
+        };
         app.status = urls[*current]
             .get("name")
             .and_then(Value::as_str)
@@ -193,9 +202,6 @@ async fn main() {
     mpv.observe_property("time-pos", Format::Double, 3).unwrap();
     mpv2.observe_property("time-pos", Format::Double, 3)
         .unwrap();
-    mpv.observe_property("duration", Format::Double, 1).unwrap();
-    mpv2.observe_property("duration", Format::Double, 1)
-        .unwrap();
     mpv.observe_property("track-list", Format::String, 4)
         .unwrap();
     mpv2.observe_property("track-list", Format::String, 4)
@@ -255,9 +261,9 @@ async fn main() {
                         .to_string(),
                 );
                 player_num = 2;
-                match mpv2.get_property::<f64>("duration") {
-                    Ok(e) => dura = e,
-                    Err(_) => {}
+                match urls[current].get("duration").and_then(Value::as_i64) {
+                    Some(e) => dura = e as f64,
+                    None => {}
                 }
                 match mpv2.get_property::<f64>("time-pos") {
                     Ok(e) => tim = e,
@@ -276,9 +282,9 @@ async fn main() {
                         .to_string(),
                 );
                 player_num = 1;
-                match mpv.get_property::<f64>("duration") {
-                    Ok(e) => dura = e,
-                    Err(_) => {}
+                match urls[current].get("duration").and_then(Value::as_i64) {
+                    Some(e) => dura = e as f64,
+                    None => {}
                 }
                 match mpv.get_property::<f64>("time-pos") {
                     Ok(e) => tim = e,
@@ -718,6 +724,12 @@ async fn main() {
                                         .and_then(Value::as_str)
                                         .unwrap()
                                         .to_string();
+                                    app.dur =
+                                        match urls[current].get("duration").and_then(Value::as_i64)
+                                        {
+                                            Some(e) => e,
+                                            None => 0,
+                                        };
                                     if urls[current]
                                         .get("url")
                                         .and_then(Value::as_str)

@@ -1,4 +1,5 @@
 use macros::*;
+use rand::{rng, seq::SliceRandom};
 use regex::Regex;
 use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
@@ -12,11 +13,11 @@ use std::{env, fs};
 use uuid;
 
 pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
-pub static INFOSTREAM: OnceLock<String> = OnceLock::new();
+pub static INFOSTREAM: OnceLock<bool> = OnceLock::new();
 static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
-pub static FALLBACK: OnceLock<String> = OnceLock::new();
+pub static API: OnceLock<Vec<Value>> = OnceLock::new();
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
@@ -47,53 +48,71 @@ pub struct CacheItem {
 //     path
 // }
 
-pub fn api_head(initator: &str, main: bool) -> String {
-    if initator == "track" {
-        if main {
-            concat_strings(Vec::from([
-                &INFOSTREAM.get().unwrap().to_string(),
-                "/track/?",
-            ]))
-        } else {
-            concat_strings(Vec::from([
-                &FALLBACK.get().unwrap().to_string(),
-                "/track/?",
-            ]))
-        }
-    } else if initator == "search" {
-        if main {
-            concat_strings(Vec::from([
-                &INFOSTREAM.get().unwrap().to_string(),
-                "/search/?s=",
-            ]))
-        } else {
-            concat_strings(Vec::from([
-                &FALLBACK.get().unwrap().to_string(),
-                "/search/?s=",
-            ]))
-        }
-    } else {
-        if main {
-            INFOSTREAM.get().unwrap().to_string()
-        } else {
-            FALLBACK.get().unwrap().to_string()
-        }
-    }
+// pub fn api_head(initator: &str, main: bool) -> String {
+//     if initator == "track" {
+//         if main {
+//             concat_strings(Vec::from([
+//                 &INFOSTREAM.get().unwrap().to_string(),
+//                 "/track/?",
+//             ]))
+//         } else {
+//             concat_strings(Vec::from([
+//                 &FALLBACK.get().unwrap().to_string(),
+//                 "/track/?",
+//             ]))
+//         }
+//     } else if initator == "search" {
+//         if main {
+//             concat_strings(Vec::from([
+//                 &INFOSTREAM.get().unwrap().to_string(),
+//                 "/search/?s=",
+//             ]))
+//         } else {
+//             concat_strings(Vec::from([
+//                 &FALLBACK.get().unwrap().to_string(),
+//                 "/search/?s=",
+//             ]))
+//         }
+//     } else {
+//         if main {
+//             INFOSTREAM.get().unwrap().to_string()
+//         } else {
+//             FALLBACK.get().unwrap().to_string()
+//         }
+//     }
+// }
+
+fn return_shuffled() -> Vec<Value> {
+    let mut v = API.get().unwrap().clone();
+    v.shuffle(&mut rng());
+    v
 }
 
 pub async fn get_quality(id: &str) -> Value {
-    let url = concat_strings(Vec::from([&api_head("none", true), "/info/?id=", id]));
+    // let url = ;
     let cli = CLIENT.get().unwrap().clone();
-    let res = cli
-        .get(url)
-        .header(USER_AGENT, AGENT)
-        .timeout(Duration::from_secs(7))
-        .send()
-        .await
-        .unwrap()
-        .json::<Value>()
-        .await
-        .unwrap();
+    let v = return_shuffled();
+    let mut resp = None;
+    for i in v {
+        let response = cli
+            .get(concat_strings(Vec::from([
+                i.get("url").and_then(Value::as_str).unwrap(),
+                "/info/?id=",
+                id,
+            ])))
+            .header(USER_AGENT, AGENT)
+            .timeout(Duration::from_secs(7))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status();
+        if !response.is_err() {
+            resp = Some(response.unwrap().json::<Value>().await.expect("JSON ERROR"));
+            break;
+        }
+    }
+    let res = resp.expect("Status error");
+    eprintln!("{res}");
     let qual = res
         .get("data")
         .and_then(|v| v.get("audioQuality"))
@@ -102,7 +121,7 @@ pub async fn get_quality(id: &str) -> Value {
     if !qual.is_none() {
         let mut quality = qual.unwrap();
         if quality == "LOSSLESS" && (pref == "HIGH" || pref == "LOW") {
-            return json!({"quality":pref.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()});
+            return json!({"quality":pref.to_string(), "duration": res.get("data").and_then(|v| v.get("duration")).and_then(Value::as_i64).unwrap(),"image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()});
         }
         let tags = res
             .get("data")
@@ -113,36 +132,9 @@ pub async fn get_quality(id: &str) -> Value {
         if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")) {
             quality = "HI_RES_LOSSLESS";
         }
-        json!({"quality":quality.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
+        json!({"quality":quality.to_string(), "duration": res.get("data").and_then(|v| v.get("duration")).and_then(Value::as_i64).unwrap(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
     } else {
-        let url = concat_strings(Vec::from([&api_head("none", false), "/info/?id=", id]));
-        let res = cli
-            .get(url)
-            .header(USER_AGENT, AGENT)
-            .send()
-            .await
-            .unwrap()
-            .json::<Value>()
-            .await
-            .unwrap();
-        if !qual.is_none() {
-            let mut quality = qual.unwrap();
-            if quality == "LOSSLESS" && (pref == "HIGH" || pref == "LOW") {
-                return json!({"quality":pref.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()});
-            }
-            let tags = res
-                .get("data")
-                .and_then(|v| v.get("mediaMetadata"))
-                .and_then(|v| v.get("tags"))
-                .and_then(Value::as_array)
-                .unwrap();
-            if tags.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS")) {
-                quality = "HI_RES_LOSSLESS";
-            }
-            json!({"quality":quality.to_string(), "image": res.get("data").and_then(|v| v.get("album")).and_then(|v| v.get("cover")).and_then(Value::as_str).unwrap()})
-        } else {
-            json!({"quality": "", "image": ""})
-        }
+        json!({"quality": ""})
     }
 }
 
@@ -257,94 +249,49 @@ pub fn set_url() {
             url_json.append(&mut jss.clone());
             break;
         }
-        match cli
-            .head(
-                url_json
-                    .first()
-                    .unwrap()
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string(),
-            )
-            .send()
-            .await
-        {
-            _ => {}
+        CLIENT.set(cli.clone()).unwrap();
+        INFOSTREAM.set(true).unwrap();
+        API.set(url_json.clone()).unwrap();
+        for i in &url_json {
+            match cli
+                .head(i.get("url").and_then(Value::as_str).unwrap().to_string())
+                .send()
+                .await
+            {
+                _ => {}
+            }
         }
-        match cli
-            .head(
-                url_json
-                    .last()
-                    .unwrap()
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string(),
-            )
-            .send()
-            .await
-        {
-            _ => {}
-        }
-        CLIENT.set(cli).unwrap();
-        INFOSTREAM
-            .set(
-                url_json
-                    .first()
-                    .unwrap()
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string(),
-            )
-            .unwrap();
-        FALLBACK
-            .set(
-                url_json
-                    .last()
-                    .unwrap()
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string(),
-            )
-            .unwrap();
     });
 }
 
 pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Error> {
     let fin_url = concat_strings(Vec::from([
-        &api_head("track", true),
-        "id=",
+        "/track/?id=",
         &id.to_string(),
         "&quality=",
         audio_quality,
     ]));
     let client = CLIENT.get().unwrap().clone();
-    let mut body = client
-        .get(fin_url)
-        .timeout(Duration::from_secs(7))
-        .header(USER_AGENT, AGENT)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status();
-    if body.is_err() {
-        let fin_url = concat_strings(Vec::from([
-            &api_head("track", false),
-            "id=",
-            &id.to_string(),
-            "&quality=",
-            audio_quality,
-        ]));
-        body = client
-            .get(fin_url)
+    let v = return_shuffled();
+    let mut body = None;
+    for i in &v {
+        let b = client
+            .get(concat_strings(Vec::from([
+                i.get("url").and_then(Value::as_str).unwrap(),
+                &fin_url,
+            ])))
+            .timeout(Duration::from_secs(7))
             .header(USER_AGENT, AGENT)
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status();
+        if !b.is_err() {
+            body = Some(b);
+            break;
+        }
     }
+    let body = body.unwrap();
     Ok(body?.json().await?)
 }
 
@@ -354,25 +301,28 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
         .collect::<Vec<&str>>()
         .join("%20")
         .to_string();
-    let q = concat_strings(Vec::from([&api_head("search", true), s.as_str()]));
+    let q = concat_strings(Vec::from(["/search/?s=", s.as_str()]));
     let client = CLIENT.get().unwrap().clone();
-    let mut body = client
-        .get(q)
-        .timeout(Duration::from_secs(7))
-        .header(USER_AGENT, AGENT)
-        .send()
-        .await
-        .unwrap()
-        .error_for_status();
-    if body.is_err() {
-        let q = concat_strings(Vec::from([&api_head("search", false), s.as_str()]));
-        body = client
-            .get(q)
+    let v = return_shuffled();
+    let mut body = None;
+    for i in &v {
+        let b = client
+            .get(concat_strings(Vec::from([
+                i.get("url").and_then(Value::as_str).unwrap(),
+                &q,
+            ])))
+            .timeout(Duration::from_secs(7))
             .header(USER_AGENT, AGENT)
             .send()
-            .await?
+            .await
+            .unwrap()
             .error_for_status();
+        if !b.is_err() {
+            body = Some(b);
+            break;
+        }
     }
+    let body = body.unwrap();
     Ok(body?.json().await?)
 }
 
