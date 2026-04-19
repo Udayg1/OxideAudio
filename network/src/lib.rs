@@ -48,40 +48,6 @@ pub struct CacheItem {
 //     path
 // }
 
-// pub fn api_head(initator: &str, main: bool) -> String {
-//     if initator == "track" {
-//         if main {
-//             concat_strings(Vec::from([
-//                 &INFOSTREAM.get().unwrap().to_string(),
-//                 "/track/?",
-//             ]))
-//         } else {
-//             concat_strings(Vec::from([
-//                 &FALLBACK.get().unwrap().to_string(),
-//                 "/track/?",
-//             ]))
-//         }
-//     } else if initator == "search" {
-//         if main {
-//             concat_strings(Vec::from([
-//                 &INFOSTREAM.get().unwrap().to_string(),
-//                 "/search/?s=",
-//             ]))
-//         } else {
-//             concat_strings(Vec::from([
-//                 &FALLBACK.get().unwrap().to_string(),
-//                 "/search/?s=",
-//             ]))
-//         }
-//     } else {
-//         if main {
-//             INFOSTREAM.get().unwrap().to_string()
-//         } else {
-//             FALLBACK.get().unwrap().to_string()
-//         }
-//     }
-// }
-
 fn return_shuffled() -> Vec<Value> {
     let mut v = API.get().unwrap().clone();
     v.shuffle(&mut rng());
@@ -209,7 +175,6 @@ pub fn set_url() {
         let cli = reqwest::Client::new();
         let res = cli.get("https://monochrome.tf").send().await.unwrap();
         let text = res.text().await.unwrap();
-        // eprintln!("{text}")
         let re = regex::Regex::new(r"assets/index-[^/]+\.js").unwrap();
         let mut indexjs = "";
         for m in re.find_iter(&text) {
@@ -225,13 +190,10 @@ pub fn set_url() {
             .await
             .unwrap();
         let text = res.text().await.unwrap();
-        // eprintln!("{text}");
         let re = Regex::new(r#"INSTANCES_URLS:*\[([^\]]+)\]"#).unwrap();
         let mut arr = Vec::new();
         if let Some(caps) = re.captures(&text) {
             let inner = &caps[1];
-
-            // extract individual URLs
             let url_re = Regex::new(r#""([^"]+)""#).unwrap();
 
             arr = url_re
@@ -241,12 +203,14 @@ pub fn set_url() {
         }
         let mut url_json = Vec::new();
         for i in arr {
-            let res = cli.get(i).send().await.unwrap();
-            let text = res.text().await.unwrap();
-            let js = serde_json::from_str::<Value>(&text).unwrap();
-            let jss = js.get("streaming").and_then(Value::as_array).unwrap();
-            url_json.append(&mut jss.clone());
-            break;
+            let res = cli.get(&i).send().await.unwrap().error_for_status();
+            if !res.is_err() {
+                let text = res.unwrap().text().await.unwrap();
+                let js = serde_json::from_str::<Value>(&text).unwrap();
+                let jss = js.get("streaming").and_then(Value::as_array).unwrap();
+                url_json.append(&mut jss.clone());
+                break;
+            }
         }
         CLIENT.set(cli.clone()).unwrap();
         INFOSTREAM.set(true).unwrap();
@@ -274,20 +238,21 @@ pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Er
     let v = return_shuffled();
     let mut body = None;
     for i in &v {
-        let b = client
+        if let Ok(b) = client
             .get(concat_strings(Vec::from([
                 i.get("url").and_then(Value::as_str).unwrap(),
                 &fin_url,
             ])))
-            .timeout(Duration::from_secs(7))
+            .timeout(Duration::from_secs(5))
             .header(USER_AGENT, AGENT)
             .send()
             .await
-            .unwrap()
-            .error_for_status();
-        if !b.is_err() {
-            body = Some(b);
-            break;
+        {
+            let b = b.error_for_status();
+            if !b.is_err() {
+                body = Some(b);
+                break;
+            }
         }
     }
     let body = body.unwrap();
@@ -305,7 +270,7 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let v = return_shuffled();
     let mut body = None;
     for i in &v {
-        let b = client
+        if let Ok(b) = client
             .get(concat_strings(Vec::from([
                 i.get("url").and_then(Value::as_str).unwrap(),
                 &q,
@@ -314,11 +279,12 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
             .header(USER_AGENT, AGENT)
             .send()
             .await
-            .unwrap()
-            .error_for_status();
-        if !b.is_err() {
-            body = Some(b);
-            break;
+        {
+            let b = b.error_for_status();
+            if !b.is_err() {
+                body = Some(b);
+                break;
+            }
         }
     }
     let body = body.unwrap();
