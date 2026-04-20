@@ -727,7 +727,10 @@ async fn main() {
                                     app.dur =
                                         match urls[current].get("duration").and_then(Value::as_i64)
                                         {
-                                            Some(e) => e,
+                                            Some(e) => {
+                                                dura = e as f64;
+                                                e
+                                            }
                                             None => 0,
                                         };
                                     if urls[current]

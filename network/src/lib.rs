@@ -250,13 +250,30 @@ pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Er
         {
             let b = b.error_for_status();
             if !b.is_err() {
-                body = Some(b);
+                let data = b?.json::<Value>().await?;
+                // eprintln!("{:?}", data);
+                let filedata = data
+                    .get("data")
+                    .and_then(|v| v.get("assetPresentation"))
+                    .and_then(Value::as_str);
+                if !filedata.is_none() {
+                    let stuff = filedata.unwrap();
+                    if stuff == "PREVIEW" {
+                        continue;
+                    } else {
+                        body = Some(data);
+                    }
+                }
+
                 break;
             }
         }
     }
-    let body = body.unwrap();
-    Ok(body?.json().await?)
+    if body.is_none() {
+        Ok(empty_json())
+    } else {
+        Ok(body.unwrap())
+    }
 }
 
 pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
