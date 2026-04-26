@@ -1,6 +1,5 @@
 use macros::*;
 use rand::{rng, seq::SliceRandom};
-use regex::Regex;
 use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json::{Value, json};
@@ -16,7 +15,7 @@ pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
 pub static INFOSTREAM: OnceLock<bool> = OnceLock::new();
 static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
-pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:146.0) Gecko/20100101 Firefox/146.0";
+pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
 pub static API: OnceLock<Vec<Value>> = OnceLock::new();
 pub struct CacheItem {
     pub path: String,
@@ -76,6 +75,9 @@ pub async fn get_quality(id: &str) -> Value {
             resp = Some(response.unwrap().json::<Value>().await.expect("JSON ERROR"));
             break;
         }
+    }
+    if resp.is_none(){
+        return json!({"quality": ""});
     }
     let res = resp.expect("Status error");
     let qual = res
@@ -173,37 +175,10 @@ pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
 pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
-        let res = cli.get("https://monochrome.tf").send().await.unwrap();
-        let text = res.text().await.unwrap();
-        let re = regex::Regex::new(r"assets/index-[^/]+\.js").unwrap();
-        let mut indexjs = "";
-        for m in re.find_iter(&text) {
-            indexjs = m.as_str();
-            break;
-        }
-        let res = cli
-            .get(concat_strings(Vec::from([
-                "https://monochrome.tf/",
-                indexjs,
-            ])))
-            .send()
-            .await
-            .unwrap();
-        let text = res.text().await.unwrap();
-        let re = Regex::new(r#"INSTANCES_URLS:*\[([^\]]+)\]"#).unwrap();
-        let mut arr = Vec::new();
-        if let Some(caps) = re.captures(&text) {
-            let inner = &caps[1];
-            let url_re = Regex::new(r#""([^"]+)""#).unwrap();
-
-            arr = url_re
-                .captures_iter(inner)
-                .map(|c| c.get(1).unwrap().as_str().to_string())
-                .collect::<Vec<String>>();
-        }
+        let arr = ["https://tidal-uptime.geeked.wtf"];
         let mut url_json = Vec::new();
         for i in arr {
-            let res = cli.get(&i).send().await.unwrap().error_for_status();
+            let res = cli.get(i).send().await.unwrap().error_for_status();
             if !res.is_err() {
                 let text = res.unwrap().text().await.unwrap();
                 let js = serde_json::from_str::<Value>(&text).unwrap();
@@ -243,7 +218,7 @@ pub async fn get_song(id: i32, audio_quality: &str) -> Result<Value, reqwest::Er
                 i.get("url").and_then(Value::as_str).unwrap(),
                 &fin_url,
             ])))
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(7))
             .header(USER_AGENT, AGENT)
             .send()
             .await
@@ -303,6 +278,9 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
                 break;
             }
         }
+    }
+    if body.is_none(){
+        return Ok(empty_json())
     }
     let body = body.unwrap();
     Ok(body?.json().await?)
@@ -436,7 +414,7 @@ pub async fn get_ytrecs(ytid: &str) -> Value {
     }
     let client = CLIENT.get().unwrap().clone();
     let body = ytrecs_json(ytid);
-    let mut resp = client
+    let resp = client
         .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
         .header("Content-Type", "application/json")
         .header(USER_AGENT, AGENT)
@@ -449,12 +427,13 @@ pub async fn get_ytrecs(ytid: &str) -> Value {
                 ytid,
             ])),
         )
-        .timeout(Duration::from_secs(7))
+        .timeout(Duration::from_secs(10))
         .json(&body)
         .send()
         .await;
-    while resp.is_err() {
-        resp = client
+    let mut res = None;
+    while resp.is_err() || res.is_none() {
+        let resp = client
             .post("https://music.youtube.com/youtubei/v1/next?prettyPrint=false")
             .header("Content-Type", "application/json")
             .header(USER_AGENT, AGENT)
@@ -470,9 +449,11 @@ pub async fn get_ytrecs(ytid: &str) -> Value {
             .json(&body)
             .send()
             .await;
+        if !resp.is_err() {
+            res = Some(resp.unwrap().text().await.unwrap());
+        }
     }
-    let res = resp.unwrap().text().await.unwrap();
-    serde_json::from_str(&res).unwrap()
+    serde_json::from_str(&res.unwrap()).unwrap()
 }
 
 pub async fn cache_url(id: &str, url: &str) -> Option<String> {

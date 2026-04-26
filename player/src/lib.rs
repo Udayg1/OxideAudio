@@ -106,7 +106,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
     thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            let mut json = global_json().lock().unwrap();
+            let mut json = global_json().lock().unwrap_or_else(|e| e.into_inner());
             IS_RUNNING.store(true, Ordering::SeqCst);
             let new_iid = convert_to_ytm(&name).await.unwrap();
             let njson = get_ytrecs(&new_iid).await;

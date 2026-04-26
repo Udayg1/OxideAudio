@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "network"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "macros",
  "rand 0.10.1",
@@ -1239,7 +1239,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "player"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64",
  "libmpv2",

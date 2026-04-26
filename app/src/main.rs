@@ -570,6 +570,7 @@ async fn main() {
                                 } else if player_num == 2 {
                                     rewind_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
+                                dura = app.dur as f64;
                                 app.dirty = true;
                             }
                             KeyCode::Char('s') => {
@@ -582,6 +583,7 @@ async fn main() {
                                     advance_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
                                 app.dirty = true;
+                                dura = app.dur as f64;
                             }
                             KeyCode::Char('a') => {
                                 app.dirty = true;
