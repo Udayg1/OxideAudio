@@ -68,10 +68,13 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
         ])
         .split(f.area());
     let footer = Paragraph::new(match app.mode {
-        UiMode::Normal => "[a] Add [p] Pause/Resume [r] Back [s] Skip [f] seek forward [b] seek backward [h] Quit",
+        UiMode::Normal => {
+            "[a] Add [p] Pause/Resume [r] Back [s] Skip [f] seek forward [b] seek backward [h] Quit"
+        }
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
-        UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",})
-        .block(Block::default().borders(Borders::ALL).title("[Controls]"));
+        UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",
+    })
+    .block(Block::default().borders(Borders::ALL).title("[Controls]"));
     let mut cur_time_str = String::new();
     let cur_min = app.cur_time / 60;
     if cur_min > 60 {
@@ -181,39 +184,28 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
                     .iter()
                     .enumerate()
                     .map(|(i, t)| {
-                        let title = t.get("title").and_then(Value::as_str).unwrap_or("Unknown");
-                        let artist = t
-                            .get("artist")
-                            .and_then(|a| a.get("name"))
+                        let title = t
+                            .get("document")
+                            .and_then(|v| v.get("title"))
                             .and_then(Value::as_str)
                             .unwrap_or("Unknown");
-
+                        let artist = t
+                            .get("document")
+                            .and_then(|v| v.get("artistName"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("Unknown");
                         let prefix = if i == app.selected { "▶ " } else { "  " };
-                        let time = t.get("duration").and_then(Value::as_i64).unwrap();
+                        let time = t
+                            .get("document")
+                            .and_then(|v| v.get("duration"))
+                            .and_then(Value::as_i64)
+                            .unwrap();
+                        // let time = 0;
                         let min = time / 60;
                         let sec = time % 60;
-                        let tags = t
-                            .get("mediaMetadata")
-                            .and_then(|v| v.get("tags"))
-                            .and_then(Value::as_array);
-                        let tag: &Vec<Value>;
-                        let mut qual = "";
                         let mut sec_str = sec.to_string();
                         if sec < 10 {
                             sec_str = concat_strings(Vec::from(["0", &sec_str]));
-                        }
-                        if !tags.is_none() {
-                            tag = tags.unwrap();
-                            qual = if !tag.is_empty()
-                                && tag.iter().any(|v| v.as_str() == Some("HIRES_LOSSLESS"))
-                            {
-                                "upto 24 bit/192kHz"
-                            } else {
-                                t.get("audioQuality").and_then(Value::as_str).unwrap()
-                            }
-                        }
-                        if qual == "LOSSLESS" {
-                            qual = "upto 16 bit/44.1kHz"
                         }
                         ListItem::new(concat_strings(Vec::from([
                             prefix,
@@ -224,8 +216,6 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
                             &min.to_string(),
                             ":",
                             &sec_str,
-                            ", ",
-                            qual,
                             ")",
                         ])))
                     })

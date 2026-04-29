@@ -39,49 +39,12 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
         .and_then(Value::as_str)
         .unwrap()
         .to_string();
-    if urls[*current]
-        .get("url")
-        .and_then(Value::as_str)
-        .unwrap()
-        .starts_with("<?xml")
-    {
-        queue_mpd_song(
-            mpv,
-            urls[*current].get("url").and_then(Value::as_str).unwrap(),
-        );
-    } else {
-        queue_song(
-            mpv,
-            urls[*current].get("url").and_then(Value::as_str).unwrap(),
-        );
-    }
-
+    queue_song(mpv, &urls[*current]);
     app.dirty = true;
 }
 fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut App) {
     if *current > 0 && urls.len() > 0 {
-        if urls[*current - 1]
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap()
-            .starts_with("<?xml")
-        {
-            queue_mpd_song(
-                mpv,
-                urls[*current - 1]
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap(),
-            );
-        } else {
-            queue_song(
-                mpv,
-                urls[*current - 1]
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap(),
-            );
-        }
+        queue_song(mpv, &urls[*current - 1]);
         *current -= 1;
         app.dur = match urls[*current].get("duration").and_then(Value::as_i64) {
             Some(e) => e,
@@ -251,15 +214,7 @@ async fn main() {
                     .unwrap();
             }
             if player_num == 1 {
-                crossfade(
-                    &mut mpv,
-                    &mut mpv2,
-                    urls[current]
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .unwrap()
-                        .to_string(),
-                );
+                crossfade(&mut mpv, &mut mpv2, &urls[current]);
                 player_num = 2;
                 match urls[current].get("duration").and_then(Value::as_i64) {
                     Some(e) => dura = e as f64,
@@ -272,15 +227,7 @@ async fn main() {
                 app.dur = dura.round() as i64;
                 app.cur_time = tim.round() as i64;
             } else if player_num == 2 {
-                crossfade(
-                    &mut mpv2,
-                    &mut mpv,
-                    urls[current]
-                        .get("url")
-                        .and_then(Value::as_str)
-                        .unwrap()
-                        .to_string(),
-                );
+                crossfade(&mut mpv2, &mut mpv, &urls[current]);
                 player_num = 1;
                 match urls[current].get("duration").and_then(Value::as_i64) {
                     Some(e) => dura = e as f64,
@@ -656,15 +603,15 @@ async fn main() {
                                     ress = search_result(&app.search_query).await;
                                 }
                                 let res = ress.unwrap();
-                                app.search_results = res
-                                    .get("data")
-                                    .and_then(|v| v.get("items"))
+                                if let Some(e) = res
+                                    .get("results")
                                     .and_then(Value::as_array)
-                                    .unwrap()
-                                    .iter()
-                                    .take(10)
-                                    .cloned()
-                                    .collect();
+                                    .and_then(|v| v.first())
+                                    .and_then(|v| v.get("hits"))
+                                    .and_then(Value::as_array)
+                                {
+                                    app.search_results = e.clone();
+                                }
                                 if app.search_results.is_empty() {
                                     app.mode = UiMode::Normal;
                                     app.dirty = true;
@@ -704,7 +651,7 @@ async fn main() {
                                 }
                             }
                             KeyCode::Enter => {
-                                let index = (app.selected + 1).to_string();
+                                let index = (app.selected).to_string();
                                 add_song(
                                     &mut urls,
                                     current,
@@ -735,28 +682,7 @@ async fn main() {
                                             }
                                             None => 0,
                                         };
-                                    if urls[current]
-                                        .get("url")
-                                        .and_then(Value::as_str)
-                                        .unwrap()
-                                        .starts_with("<?xml")
-                                    {
-                                        queue_mpd_song(
-                                            &mut mpv,
-                                            &urls[current]
-                                                .get("url")
-                                                .and_then(Value::as_str)
-                                                .unwrap(),
-                                        );
-                                    } else {
-                                        queue_song(
-                                            &mut mpv,
-                                            &urls[current]
-                                                .get("url")
-                                                .and_then(Value::as_str)
-                                                .unwrap(),
-                                        );
-                                    }
+                                    queue_song(&mut mpv, &urls[current]);
                                 }
                                 app.mode = UiMode::Normal;
                             }
