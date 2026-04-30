@@ -15,7 +15,8 @@ use std::{env, fs};
 use tokio;
 
 pub static SHUTDOWN: AtomicBool = AtomicBool::new(false);
-pub static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
+static ID_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
+static INDEX_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 pub static SAVE_DATA: OnceLock<bool> = OnceLock::new();
 pub static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 pub static CROSSFADE_DUR: f64 = 5.5;
@@ -88,10 +89,47 @@ pub fn global_json() -> &'static Mutex<Value> {
     })
 }
 
+pub fn key_index() -> &'static Mutex<Value> {
+    INDEX_CACHE.get_or_init(|| {
+        let path = concat_strings(Vec::from([
+            &env::var("HOME").unwrap(),
+            "/.local/share/mscply/songs/key_index.json",
+        ]));
+
+        let value = fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| empty_json());
+
+        Mutex::new(value)
+    })
+}
+
+fn key_index_readonly() -> Value {
+    let path = concat_strings(Vec::from([
+        &env::var("HOME").unwrap(),
+        "/.local/share/mscply/songs/key_index.json",
+    ]));
+    let value = fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| empty_json());
+    value
+}
+
 pub fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
     let path = concat_strings(Vec::from([
         &env::var("HOME").unwrap(),
         "/.local/share/mscply/cache.json",
+    ]));
+    fs::create_dir_all(path.rsplit_once('/').unwrap().0).unwrap();
+    fs::write(path, serde_json::to_string_pretty(&**json).unwrap()).unwrap();
+}
+
+pub fn save_index(json: &std::sync::MutexGuard<'_, Value>) {
+    let path = concat_strings(Vec::from([
+        &env::var("HOME").unwrap(),
+        "/.local/share/mscply/songs/key_index.json",
     ]));
     fs::create_dir_all(path.rsplit_once('/').unwrap().0).unwrap();
     fs::write(path, serde_json::to_string_pretty(&**json).unwrap()).unwrap();
@@ -119,23 +157,26 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 let njson = convert_to_v1(&json);
                 *json = njson;
             }
+            let mut index = key_index().lock().unwrap_or_else(|e| e.into_inner());
             IS_RUNNING.store(true, Ordering::SeqCst);
             let new_iid = convert_to_ytm(&name).await.unwrap();
             let njson = get_ytrecs(&new_iid).await;
             let mut arr = get_ytrec_array(njson);
-            // eprintln!("{:?}", arr);
             arr.shuffle(&mut rng());
             stderr().flush().unwrap();
             let mut count = 0;
             for item in arr.iter() {
                 if count > 5 {
                     save_cache(&json);
+                    save_index(&index);
                     count = 0;
                 } else {
                     count += 1;
                 }
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     save_cache(&json);
+                    save_index(&index);
+
                     return;
                 }
                 let name = item.get("name").and_then(Value::as_str).unwrap();
@@ -149,6 +190,8 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 if amazon_id.is_none() {
                     if SHUTDOWN.load(Ordering::SeqCst) {
                         save_cache(&json);
+                        save_index(&index);
+
                         return;
                     }
                     // let songlink_data = get_songlink_data(id, "y").await;
@@ -217,22 +260,28 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                 if !amazon_id_final.is_empty() {
                     if SHUTDOWN.load(Ordering::SeqCst) {
                         save_cache(&json);
+                        save_index(&index);
+
                         return;
                     }
-                    // let cached = check_song(&amazon_id_final);
-                    let cached = false;
+                    let cached = check_song(&amazon_id_final);
                     let quality_json = get_quality(&amazon_id_final).await;
                     if cached {
-                        tx.send(QueueItem::Url(json!({"url":
-                            concat_strings(Vec::from([
-                                &env::var("HOME").unwrap(),
-                                "/.local/share/mscply/songs/",
-                                &amazon_id_final,
-                            ])), "name":
-                            concat_strings(Vec::from([name, " - ", artist])), "duration":quality_json.get("duration").and_then(Value::as_i64).unwrap() ,"id" : amazon_id_final})
-                        ))
-                        .ok();
-                        continue;
+                        if let Some(key) = index.get(&amazon_id_final).and_then(|v| v.get("key")).and_then(Value::as_str){
+                            tx.send(QueueItem::Url(json!({"url":
+                                concat_strings(Vec::from([
+                                    &env::var("HOME").unwrap(),
+                                    "/.local/share/mscply/songs/",
+                                    &amazon_id_final,
+                                ])), "name":
+                                concat_strings(Vec::from([name, " - ", artist])),
+                                "duration":quality_json.get("duration").and_then(Value::as_i64).unwrap(),
+                                "key": key,
+                                "id" : amazon_id_final})
+                            ))
+                            .ok();
+                            continue;
+                        }
                     }
                     let quality = quality_json.get("quality").and_then(Value::as_str).unwrap();
                     if quality.is_empty() {
@@ -241,6 +290,8 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     let id = &amazon_id_final;
                     if SHUTDOWN.load(Ordering::SeqCst) {
                         save_cache(&json);
+                        save_index(&index);
+
                         return;
                     }
                     if let Ok(res) = get_song(id, &quality).await {
@@ -261,19 +312,24 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                                 continue;
                             }
                             cache_url(&amazon_id_final, url).await;
+                            let key = res.get("decryptionKey").and_then(Value::as_str).unwrap_or("");
                             tx.send(QueueItem::Url(json!({"url":
                                                         concat_strings(Vec::from([
                                                             &env::var("HOME").unwrap(),
                                                             "/.local/share/mscply/songs/",
                                                             &amazon_id_final,
                                                         ])), "name":
-                                                        concat_strings(Vec::from([name, " - ", artist])), "id" : amazon_id_final.to_string()})))
+                                                        concat_strings(Vec::from([name, " - ", artist])),
+                                                        "key": key,
+                                                        "id" : amazon_id_final.to_string()})))
                             .ok();
+                            index.as_object_mut().unwrap().insert(amazon_id_final.clone(), json!({"key": key}));
                         }
                     }
                 }
             }
             save_cache(&json);
+            save_index(&index);
             IS_RUNNING.store(false, Ordering::SeqCst);
         });
     });
@@ -306,8 +362,7 @@ pub async fn add_song(
             .and_then(|v| v.get("asin"))
             .and_then(Value::as_str)
             .unwrap_or("");
-        // let cached = check_song(&id.to_string());
-        let cached = false;
+        let cached = check_song(&id.to_string());
         let mut audio_quality = "flac";
         let title = track
             .get("document")
@@ -320,13 +375,19 @@ pub async fn add_song(
             .and_then(Value::as_str)
             .unwrap_or("Unknown");
         if cached {
-            urls.insert(
-                if cur == 0 && urls.len() == 0 {
-                    0
-                } else {
-                    cur + 1
-                },
-                json!({"url": concat_strings(Vec::from([
+            let index = key_index_readonly();
+            if let Some(key) = index
+                .get(&id)
+                .and_then(|v| v.get("key"))
+                .and_then(Value::as_str)
+            {
+                urls.insert(
+                    if cur == 0 && urls.len() == 0 {
+                        0
+                    } else {
+                        cur + 1
+                    },
+                    json!({"url": concat_strings(Vec::from([
                     &env::var("HOME").unwrap(),
                     "/.local/share/mscply/songs/",
                     &id.to_string(),
@@ -334,9 +395,11 @@ pub async fn add_song(
                     title,
                     " - ",
                     artist,
-                ])), "id": id.to_string()
+                ])), "id": id.to_string(),
+                "key": key
                 ,"duration": track.get("duration").and_then(Value::as_i64).unwrap_or(0)}),
-            );
+                );
+            }
         } else {
             let pref = PREF_QUAL.get().unwrap();
             if pref == "HIGH" {

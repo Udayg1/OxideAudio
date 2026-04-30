@@ -30,10 +30,11 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
 
     *current += 1;
     app.queue_len = (urls.len() - *current - 1) as i64;
-    app.dur = match urls[*current].get("duration").and_then(Value::as_i64) {
-        Some(e) => e,
-        None => 0,
-    };
+    let mut duration = mpv.get_property::<f64>("duration");
+    while duration.is_err(){
+        duration =  mpv.get_property::<f64>("duration");
+    }
+    app.dur = duration.unwrap() as i64;
     app.status = urls[*current]
         .get("name")
         .and_then(Value::as_str)
@@ -60,8 +61,11 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
     } else if !mpv.get_property::<bool>("idle-active").unwrap() {
         match mpv.command("seek", &["0", "absolute"]) {
             Ok(_) => {
-                app.dur = 0;
-                app.dur = mpv.get_property::<f64>("duration").unwrap_or(0.0) as i64;
+                let mut duration = mpv.get_property::<f64>("duration");
+                while duration.is_err(){
+                    duration =  mpv.get_property::<f64>("duration");
+                }
+                app.dur = duration.unwrap() as i64;
                 app.dirty = true;
             }
             Err(_) => {}
@@ -175,7 +179,7 @@ async fn main() {
         .unwrap();
     mpv2.observe_property("track-list", Format::String, 4)
         .unwrap();
-    let mut options = Options { queue: true };
+    let options = Options { queue: true };
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
     let mut last_add;
     let mut last_update = Instant::now();
@@ -487,16 +491,12 @@ async fn main() {
                 match event.unwrap() {
                     Event::Key(key) => match app.mode {
                         UiMode::Normal => match key.code {
-                            KeyCode::Char('h') => {
+                            KeyCode::Char('h') | KeyCode::Char('H') => {
                                 app.dirty = true;
                                 SHUTDOWN.store(true, Ordering::SeqCst);
                                 break;
                             }
-                            KeyCode::Char('u') => {
-                                app.dirty = true;
-                                options.queue = !options.queue;
-                            }
-                            KeyCode::Char('p') => {
+                            KeyCode::Char('p') | KeyCode::Char(' ') | KeyCode::Char('P') => {
                                 if !app.paused {
                                     if player_num == 1 {
                                         mpv.set_property("pause", true).unwrap();
@@ -515,7 +515,7 @@ async fn main() {
                                     app.dirty = true;
                                 }
                             }
-                            KeyCode::Char('r') => {
+                            KeyCode::Char('r') | KeyCode::Char('R') => {
                                 _skipped = true;
                                 app.cur_time = 0;
                                 if player_num == 1 {
@@ -524,9 +524,10 @@ async fn main() {
                                     rewind_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
                                 dura = app.dur as f64;
+                                eprintln!("dura {dura} app {}", app.dur);
                                 app.dirty = true;
                             }
-                            KeyCode::Char('s') => {
+                            KeyCode::Char('s') | KeyCode::Char('S') => {
                                 _skipped = true;
                                 app.dur = 0;
                                 app.cur_time = 0;
@@ -538,12 +539,12 @@ async fn main() {
                                 app.dirty = true;
                                 dura = app.dur as f64;
                             }
-                            KeyCode::Char('a') => {
+                            KeyCode::Char('a') | KeyCode::Char('A') => {
                                 app.dirty = true;
                                 app.search_query.clear();
                                 app.mode = UiMode::Search;
                             }
-                            KeyCode::Char('f') => {
+                            KeyCode::Char('f') | KeyCode::Char('F') => {
                                 if !mpv.get_property::<bool>("idle-active").unwrap()
                                     || !mpv2.get_property::<bool>("idle-active").unwrap()
                                 {
@@ -565,7 +566,7 @@ async fn main() {
                                     app.dirty = true;
                                 }
                             }
-                            KeyCode::Char('b') => {
+                            KeyCode::Char('b') | KeyCode::Char('B') => {
                                 if !mpv.get_property::<bool>("idle-active").unwrap()
                                     || !mpv2.get_property::<bool>("idle-active").unwrap()
                                 {
@@ -670,7 +671,9 @@ async fn main() {
                                 app.queue_len = (urls.len() - current - 1) as i64;
 
                                 app.dirty = true;
-                                if mpv.get_property::<i64>("playlist-pos").unwrap() == -1 {
+                                if mpv.get_property::<i64>("playlist-pos").unwrap() == -1
+                                    && player_num == 1
+                                {
                                     if current != 0 {
                                         current += 1;
                                     }
@@ -689,6 +692,27 @@ async fn main() {
                                             None => 0,
                                         };
                                     queue_song(&mut mpv, &urls[current]);
+                                } else if mpv2.get_property::<i64>("playlist-pos").unwrap() == -1
+                                    && player_num == 2
+                                {
+                                    if current != 0 {
+                                        current += 1;
+                                    }
+                                    app.status = urls[current]
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap()
+                                        .to_string();
+                                    app.dur =
+                                        match urls[current].get("duration").and_then(Value::as_i64)
+                                        {
+                                            Some(e) => {
+                                                dura = e as f64;
+                                                e
+                                            }
+                                            None => 0,
+                                        };
+                                    queue_song(&mut mpv2, &urls[current]);
                                 }
                                 app.mode = UiMode::Normal;
                             }
