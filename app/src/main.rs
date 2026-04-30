@@ -99,8 +99,14 @@ async fn main() {
                 save = true;
             } else if i == "-n" {
                 qual = "HIGH";
-            } else if i == "-l" {
-                qual = "LOW"
+            } else if i == "-u" {
+                let mut jsn = global_json().lock().unwrap_or_else(|e| e.into_inner());
+                if jsn.get("JSONversion").and_then(Value::as_str).is_none() {
+                    *jsn = convert_to_v1(&jsn);
+                    save_cache(&jsn);
+                    println!("cache file updated!");
+                    return;
+                }
             }
         }
     }

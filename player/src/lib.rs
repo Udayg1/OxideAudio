@@ -97,7 +97,7 @@ pub fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
     fs::write(path, serde_json::to_string_pretty(&**json).unwrap()).unwrap();
 }
 
-fn convert_to_v1(json: &std::sync::MutexGuard<'_, Value>) -> Value {
+pub fn convert_to_v1(json: &std::sync::MutexGuard<'_, Value>) -> Value {
     let mut jsn = empty_json();
     jsn["JSONversion"] = json!("v1");
     if let Some(obj) = json.as_object() {
@@ -123,12 +123,12 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
             let new_iid = convert_to_ytm(&name).await.unwrap();
             let njson = get_ytrecs(&new_iid).await;
             let mut arr = get_ytrec_array(njson);
-            eprintln!("got {}",arr.len());
+            // eprintln!("{:?}", arr);
             arr.shuffle(&mut rng());
             stderr().flush().unwrap();
             let mut count = 0;
             for item in arr.iter() {
-                if count > 10 {
+                if count > 5 {
                     save_cache(&json);
                     count = 0;
                 } else {
@@ -151,20 +151,64 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                         save_cache(&json);
                         return;
                     }
-                    let songlink_data = get_songlink_data(id, "y").await;
-                    let iiiid = extract_amazon_id(&songlink_data);
+                    // let songlink_data = get_songlink_data(id, "y").await;
+                    let songs = search_result(&concat_strings(Vec::from([name, " ", artist]))).await.unwrap();
+                    // let iiiid = extract_amazon_id(&songlink_data);
+                    let iiiid = songs.get("results")
+                    .and_then(Value::as_array)
+                    .and_then(|v| v.first())
+                    .and_then(|v| v.get("hits"))
+                    .and_then(Value::as_array);
                     if iiiid.is_none() {
                         continue;
                     } else {
-                        amazon_id_final = iiiid.unwrap();
-                        let entry = json
-                            .as_object_mut()
-                            .unwrap()
-                            .entry(id.to_string())
-                            .or_insert(json!({}));
+                        let final_song = iiiid.unwrap();
 
-                        if let Some(obj) = entry.as_object_mut() {
-                            obj.insert("amazon".to_string(), Value::String(amazon_id_final.clone()));
+                        // amazon_id_final = final_song[0].get("document").and_then(Value::as_str).unwrap().to_string();
+                        if let Some(e) = final_song.first(){
+                            if let Some(fin_track) = e.get("document").and_then(|v| v.get("asin")).and_then(Value::as_str){
+                                amazon_id_final = fin_track.to_string();
+                                let entry = json
+                                    .as_object_mut()
+                                    .unwrap()
+                                    .entry(id.to_string())
+                                    .or_insert(json!({}));
+                                if let Some(obj) = entry.as_object_mut() {
+                                    obj.insert("amazon".to_string(), Value::String(amazon_id_final.clone()));
+                                }
+                            }
+                            else {
+                                let songlink_data = get_songlink_data(id, "y").await;
+                                let amaz_id = extract_amazon_id(&songlink_data);
+                                if amaz_id.is_none(){
+                                    continue;
+                                }
+                                amazon_id_final = amaz_id.unwrap().to_string();
+                                let entry = json
+                                    .as_object_mut()
+                                    .unwrap()
+                                    .entry(id.to_string())
+                                    .or_insert(json!({}));
+                                if let Some(obj) = entry.as_object_mut() {
+                                    obj.insert("amazon".to_string(), Value::String(amazon_id_final.clone()));
+                                }
+                            }
+                        }
+                        else {
+                            let songlink_data = get_songlink_data(id, "y").await;
+                            let amaz_id = extract_amazon_id(&songlink_data);
+                            if amaz_id.is_none(){
+                                continue;
+                            }
+                            amazon_id_final = amaz_id.unwrap().to_string();
+                            let entry = json
+                                .as_object_mut()
+                                .unwrap()
+                                .entry(id.to_string())
+                                .or_insert(json!({}));
+                            if let Some(obj) = entry.as_object_mut() {
+                                obj.insert("amazon".to_string(), Value::String(amazon_id_final.clone()));
+                            }
                         }
                     }
                 } else {
