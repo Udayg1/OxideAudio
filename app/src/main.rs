@@ -23,24 +23,27 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
         app.dirty = true;
         *current = urls.len();
         if !mpv.get_property::<bool>("idle-active").unwrap() {
-            mpv.command("seek", &["100", "absolute-percent"]).unwrap();
+            mpv.command("seek", &["100", "absolute-percent"])
+                .unwrap_or(());
         }
         return;
     }
-
     *current += 1;
+    queue_song(mpv, &urls[*current]);
     app.queue_len = (urls.len() - *current - 1) as i64;
-    let mut duration = mpv.get_property::<f64>("duration");
-    while duration.is_err(){
-        duration =  mpv.get_property::<f64>("duration");
+    let mut duration = urls[*current].get("duration").and_then(Value::as_i64);
+    while duration.is_none() {
+        let dur = mpv.get_property::<f64>("duration");
+        if !dur.is_err() {
+            duration = Some(dur.unwrap() as i64);
+        }
     }
-    app.dur = duration.unwrap() as i64;
+    app.dur = duration.unwrap();
     app.status = urls[*current]
         .get("name")
         .and_then(Value::as_str)
         .unwrap()
         .to_string();
-    queue_song(mpv, &urls[*current]);
     app.dirty = true;
 }
 fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut App) {
@@ -49,7 +52,13 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
         *current -= 1;
         app.dur = match urls[*current].get("duration").and_then(Value::as_i64) {
             Some(e) => e,
-            None => 0,
+            None => {
+                let mut dur = mpv.get_property::<i64>("duration");
+                while dur.is_err() {
+                    dur = mpv.get_property::<i64>("duration");
+                }
+                dur.unwrap()
+            }
         };
         app.status = urls[*current]
             .get("name")
@@ -61,10 +70,14 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
     } else if !mpv.get_property::<bool>("idle-active").unwrap() {
         match mpv.command("seek", &["0", "absolute"]) {
             Ok(_) => {
-                let mut duration = mpv.get_property::<f64>("duration");
-                while duration.is_err(){
-                    duration =  mpv.get_property::<f64>("duration");
+                let mut duration = urls[*current].get("duration").and_then(Value::as_i64);
+                while duration.is_none() {
+                    let dur = mpv.get_property::<f64>("duration");
+                    if !dur.is_err() {
+                        duration = Some(dur.unwrap() as i64);
+                    }
                 }
+                app.dur = duration.unwrap();
                 app.dur = duration.unwrap() as i64;
                 app.dirty = true;
             }
@@ -95,7 +108,7 @@ async fn main() {
                         println!("Removed cache files");
                     }
                     Err(e) => {
-                        eprintln!("Error removing direcotry:  {}, {}", path, e);
+                        println!("Error removing direcotry:  {}, {}", path, e);
                     }
                 }
                 return;
@@ -131,7 +144,7 @@ async fn main() {
     }) {
         Ok(player) => player,
         Err(e) => {
-            eprintln!("Failed to start MPV: {}", e);
+            println!("Failed to start MPV: {}", e);
             return;
         }
     };
@@ -169,6 +182,7 @@ async fn main() {
         sample_rate: 0,
         channel_count: 0,
         bitrate: 0,
+        msg: String::new(),
     };
     mpv.observe_property("idle-active", Format::Flag, 2)
         .unwrap();
@@ -183,9 +197,9 @@ async fn main() {
     let mut last_mode_switch = Instant::now() - Duration::from_secs(1);
     let mut last_add;
     let mut last_update = Instant::now();
+    let mut last_msg = Instant::now();
     let update_every = Duration::from_millis(100);
     let skip_every = Duration::from_millis(800);
-    let mut _auto_started = false;
     let mut _skipped = false;
     let mut last = terminal.size().unwrap();
     let mut _logfile = OpenOptions::new()
@@ -295,6 +309,10 @@ async fn main() {
                     }
                 }
             }
+        }
+        if !app.msg.is_empty() && (Instant::now() - last_msg) > Duration::from_secs(3) {
+            app.msg = String::new();
+            app.dirty = true;
         }
         if player_num == 1 {
             if let Some(event) = mpv.wait_event(0.05) {
@@ -443,18 +461,20 @@ async fn main() {
         }
         if mpv.get_property::<bool>("idle-active").unwrap()
             && mpv2.get_property::<bool>("idle-active").unwrap()
-            && urls.len() >= current + 1
+            && urls.len() > current + 1
         {
             if last_mode_switch.elapsed() >= skip_every + Duration::from_secs(3) {
                 app.cur_time = 0;
                 app.dur = 0;
+                current -=1;
                 if player_num == 1 {
                     advance_playback(&mut mpv, &urls, &mut current, &mut app);
                 } else if player_num == 2 {
                     advance_playback(&mut mpv2, &urls, &mut current, &mut app);
                 }
+                dura = app.dur as f64;
                 last_mode_switch = Instant::now();
-                _auto_started = true;
+                app.dirty = true;
             }
         }
 
@@ -518,19 +538,21 @@ async fn main() {
                             KeyCode::Char('r') | KeyCode::Char('R') => {
                                 _skipped = true;
                                 app.cur_time = 0;
+                                tim = 0.0;
+                                app.dur = 0;
                                 if player_num == 1 {
                                     rewind_playback(&mut mpv, &urls, &mut current, &mut app);
                                 } else if player_num == 2 {
                                     rewind_playback(&mut mpv2, &urls, &mut current, &mut app);
                                 }
                                 dura = app.dur as f64;
-                                eprintln!("dura {dura} app {}", app.dur);
                                 app.dirty = true;
                             }
                             KeyCode::Char('s') | KeyCode::Char('S') => {
                                 _skipped = true;
                                 app.dur = 0;
                                 app.cur_time = 0;
+                                tim = 0.0;
                                 if player_num == 1 {
                                     advance_playback(&mut mpv, &urls, &mut current, &mut app);
                                 } else if player_num == 2 {
@@ -659,7 +681,7 @@ async fn main() {
                             }
                             KeyCode::Enter => {
                                 let index = (app.selected).to_string();
-                                add_song(
+                                if !add_song(
                                     &mut urls,
                                     current,
                                     &app.search_results,
@@ -667,7 +689,14 @@ async fn main() {
                                     app.search_query.clone(),
                                     tx.clone(),
                                 )
-                                .await;
+                                .await
+                                {
+                                    app.msg = String::from("Couldn't queue the last request");
+                                    last_msg = Instant::now();
+                                    app.mode = UiMode::Normal;
+                                    app.dirty = true;
+                                    continue;
+                                }
                                 app.queue_len = (urls.len() - current - 1) as i64;
 
                                 app.dirty = true;

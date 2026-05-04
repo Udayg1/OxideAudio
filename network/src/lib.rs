@@ -50,14 +50,18 @@ pub async fn get_quality(id: &str) -> Value {
     let cli = CLIENT.get().unwrap().clone();
     let url = concat_strings(Vec::from([API, "/metadata?asin=", id]));
     let mut resp = None;
-    let response = cli
+    let res = cli
         .get(url)
         .header(USER_AGENT, AGENT)
         .timeout(Duration::from_secs(7))
         .send()
-        .await
-        .unwrap()
-        .error_for_status();
+        .await;
+    let response = match res {
+        Ok(e) => e.error_for_status(),
+        Err(_) => {
+            return json!({"quality": ""});
+        }
+    };
     if !response.is_err() {
         resp = Some(response.unwrap().json::<Value>().await.expect("JSON ERROR"));
     }

@@ -162,7 +162,13 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
             let new_iid = convert_to_ytm(&name).await.unwrap();
             let njson = get_ytrecs(&new_iid).await;
             let mut arr = get_ytrec_array(njson);
-            arr.shuffle(&mut rng());
+            let arlen = arr.len();
+            // arr.shuffle(&mut rng());
+            let mut shuf = 0;
+            while shuf < arlen {
+                arr[shuf..std::cmp::min(arlen, shuf+10)].shuffle(&mut rng());
+                shuf+=10;
+            }
             stderr().flush().unwrap();
             let mut count = 0;
             for item in arr.iter() {
@@ -291,7 +297,6 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                     if SHUTDOWN.load(Ordering::SeqCst) {
                         save_cache(&json);
                         save_index(&index);
-
                         return;
                     }
                     if let Ok(res) = get_song(id, &quality).await {
@@ -346,6 +351,12 @@ pub fn queue_song(mpv: &mut Mpv, url: &Value) {
     mpv.command("loadfile", &[file_url, "replace"]).unwrap();
 }
 
+fn is_streamable(json: &Value) -> bool {
+    json.get("stremeable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 pub async fn add_song(
     urls: &mut Vec<Value>,
     cur: usize,
@@ -353,7 +364,7 @@ pub async fn add_song(
     index: String,
     _name: String,
     tx: Sender<QueueItem>,
-) {
+) -> bool {
     let choice: usize = index.trim().parse().unwrap_or(0);
     if choice <= items.len() {
         let track = &items[choice];
@@ -406,6 +417,9 @@ pub async fn add_song(
                 audio_quality = "opus";
             }
             let song = get_song(id, audio_quality).await.unwrap();
+            if !is_streamable(&song) {
+                return false;
+            }
             let key = song.get("decryptionKey").and_then(Value::as_str).unwrap();
             let manifest = song
                 .get("streamInfo")
@@ -445,4 +459,5 @@ pub async fn add_song(
                 .unwrap(),
         tx,
     );
+    true
 }

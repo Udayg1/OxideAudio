@@ -43,12 +43,14 @@ pub struct App {
     pub sample_rate: i64,
     pub channel_count: i64,
     pub bitrate: i64,
+    pub msg: String
 }
 
 pub fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
     enable_raw_mode().unwrap();
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen).unwrap();
+    execute!(stdout, crossterm::terminal::Clear(crossterm::terminal::ClearType::All)).unwrap();
     Terminal::new(CrosstermBackend::new(stdout)).unwrap()
 }
 
@@ -133,10 +135,14 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
                 },
             ]));
         }
+        
     } else {
         text += &app.status;
     }
-
+    if !app.msg.is_empty(){
+        text += "\nError - ";
+        text += &app.msg;
+    }
     let header = Paragraph::new(text).block(
         Block::default()
             .borders(Borders::ALL)
