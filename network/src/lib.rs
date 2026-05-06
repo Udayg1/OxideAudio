@@ -15,7 +15,7 @@ pub static INFOSTREAM: OnceLock<bool> = OnceLock::new();
 static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
-pub static API: &str = "https://t2tunes.site/api/amazon-music";
+pub static API: &str = "https://jumo-dl.pages.dev/";
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
@@ -48,11 +48,12 @@ pub struct CacheItem {
 
 pub async fn get_quality(id: &str) -> Value {
     let cli = CLIENT.get().unwrap().clone();
-    let url = concat_strings(Vec::from([API, "/metadata?asin=", id]));
+    let url = concat_strings(Vec::from([API, "fetch?track_id=", id, "&format_id=27"]));
     let mut resp = None;
     let res = cli
         .get(url)
         .header(USER_AGENT, AGENT)
+        .header(REFERER, API)
         .timeout(Duration::from_secs(7))
         .send()
         .await;
@@ -63,37 +64,28 @@ pub async fn get_quality(id: &str) -> Value {
         }
     };
     if !response.is_err() {
-        resp = Some(response.unwrap().json::<Value>().await.expect("JSON ERROR"));
+        let r = response.unwrap().text().await.unwrap();
+        let jsn = serde_json::from_str::<Value>(&r).unwrap();
+        resp = Some(jsn);
     }
     if resp.is_none() {
         return json!({"quality": ""});
     }
     let res = resp.expect("Status error");
     let mut qual = None;
-    if let Some(qual_arr) = res
-        .get("trackList")
-        .and_then(Value::as_array)
-        .and_then(|v| v.first())
-        .and_then(|v| v.get("assetQualities"))
-        .and_then(Value::as_array)
+    if let Some(qual_) = res
+        .get("metadataTrack")
+        .and_then(|v| v.get("maximum_bit_depth"))
+        .and_then(Value::as_i64)
     {
-        for i in qual_arr {
-            if i.get("quality").and_then(Value::as_str) == Some("CD") {
-                qual = Some("flac");
-                break;
-            } else {
-                qual = Some("opus");
-            }
+        if qual_ >= 16 {
+            qual = Some("flac");
+        } else {
+            qual = Some("opus");
         }
     }
     let mut duration = None;
-    if let Some(dur) = res
-        .get("trackList")
-        .and_then(Value::as_array)
-        .and_then(|v| v.first())
-        .and_then(|v| v.get("duration"))
-        .and_then(Value::as_i64)
-    {
+    if let Some(dur) = res.get("duration").and_then(Value::as_i64) {
         duration = Some(dur);
     }
     let pref = PREF_QUAL.get().unwrap();
@@ -179,12 +171,11 @@ pub fn set_url() {
         let cli = reqwest::Client::new();
         CLIENT.set(cli.clone()).unwrap();
         let res = cli
-            .get("https://t2tunes.site/api/status")
+            .get(concat_strings(Vec::from([API, "fetch?track_id=227149584"])))
             .send()
             .await
             .unwrap();
-        let jsn = res.json::<Value>().await.unwrap();
-        if jsn.get("amazonMusic").and_then(Value::as_str) == Some("up") {
+        if let Ok(_) = res.json::<Value>().await {
             INFOSTREAM.set(true).unwrap();
         } else {
             INFOSTREAM.set(false).unwrap();
@@ -195,10 +186,10 @@ pub fn set_url() {
 pub async fn get_song(id: &str, audio_quality: &str) -> Result<Value, reqwest::Error> {
     let fin_url = concat_strings(Vec::from([
         API,
-        "/media-from-asin?asin=",
+        "fetch?track_id=",
         id,
-        "&codec=",
-        audio_quality,
+        "&format_id=",
+        if audio_quality == "flac" { "27" } else { "5" },
     ]));
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
@@ -210,11 +201,7 @@ pub async fn get_song(id: &str, audio_quality: &str) -> Result<Value, reqwest::E
         .await
     {
         if let Ok(jsn) = b.json::<Value>().await {
-            if let Some(element) = jsn.as_array() {
-                if let Some(first) = element.first() {
-                    body = Some(first.clone())
-                }
-            }
+            body = Some(jsn)
         }
     }
 
@@ -229,14 +216,9 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let s = query
         .split(' ')
         .collect::<Vec<&str>>()
-        .join("+")
+        .join("%20")
         .to_string();
-    let q = concat_strings(Vec::from([
-        API,
-        "/search?query=",
-        s.as_str(),
-        "&types=track",
-    ]));
+    let q = concat_strings(Vec::from([API, "search?query=", s.as_str()]));
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
     if let Ok(b) = client
@@ -247,7 +229,9 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
         .await
     {
         if let Ok(e) = b.json::<Value>().await {
-            body = Some(e)
+            if let Some(element) = e.get("tracks") {
+                body = Some(element.clone());
+            }
         }
     }
 
@@ -275,6 +259,7 @@ pub async fn get_songlink_data(id: &str, source: &str) -> Value {
         .to_string();
     serde_json::from_str(&json_text).unwrap()
 }
+
 pub async fn convert_to_ytm(name: &str) -> Option<String> {
     let client = CLIENT.get().unwrap().clone();
 

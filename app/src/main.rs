@@ -628,15 +628,13 @@ async fn main() {
                                     continue;
                                 }
                                 let mut ress = search_result(&app.search_query).await;
+                                // eprintln!("{:?}", ress);
                                 while ress.is_err() {
                                     ress = search_result(&app.search_query).await;
                                 }
                                 let res = ress.unwrap();
                                 if let Some(e) = res
-                                    .get("results")
-                                    .and_then(Value::as_array)
-                                    .and_then(|v| v.first())
-                                    .and_then(|v| v.get("hits"))
+                                    .get("items")
                                     .and_then(Value::as_array)
                                 {
                                     app.search_results = e.clone();
