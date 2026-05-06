@@ -627,20 +627,45 @@ async fn main() {
                                 while INFOSTREAM.get().is_none() {
                                     continue;
                                 }
+                                let mut fallback_used = false;
                                 let mut ress = search_result(&app.search_query).await;
-                                while ress.is_err() {
-                                    ress = search_result(&app.search_query).await;
+                                if ress.is_err() {
+                                    fallback_used = true;
+                                    ress = fallback_search(&app.search_query).await;
+                                }
+                                if ress.is_err(){
+                                    app.msg = "Couldn't complete the search".to_string();
+                                    last_msg = Instant::now();
+                                    app.mode = UiMode::Normal;
+                                    app.dirty = true;
+                                    continue;
                                 }
                                 let res = ress.unwrap();
-                                if let Some(e) = res
-                                    .get("results")
-                                    .and_then(Value::as_array)
-                                    .and_then(|v| v.first())
-                                    .and_then(|v| v.get("hits"))
-                                    .and_then(Value::as_array)
-                                {
-                                    app.search_results = e.clone();
+                                let mut new_jsn = Vec::new();
+                                // eprintln!("{res}");
+                                if fallback_used{
+                                    if let Some(v) = res.get("items").and_then(Value::as_array){
+                                        for i in v{
+                                            let name = i.get("performer").and_then(|v| v.get("name")).and_then(Value::as_str).unwrap_or("Unknown");
+                                            let duration = i.get("duration").and_then(Value::as_i64).unwrap_or(0);
+                                            let id = i.get("id").and_then(Value::as_i64).unwrap_or(0).to_string();
+                                            let title = i.get("title").and_then(Value::as_str).unwrap_or("Unknown");
+                                            new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
+                                        }
+                                    }
                                 }
+                                else {
+                                    if let Some(v) = res.get("results").and_then(Value::as_array).and_then(|v| v.first()).and_then(|v| v.get("hits")).and_then(Value::as_array) {
+                                        for i in v{
+                                            let name = i.get("document").and_then(|v| v.get("artistName")).and_then(Value::as_str).unwrap_or("Unknown");
+                                            let duration = i.get("document").and_then(|v| v.get("duration")).and_then(Value::as_i64).unwrap_or(0);
+                                            let id = i.get("document").and_then(|v| v.get("asin")).and_then(Value::as_str).unwrap_or("");
+                                            let title = i.get("document").and_then(|v| v.get("title")).and_then(Value::as_str).unwrap_or("Unknown");
+                                            new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "amazon"}));
+                                        }
+                                    }
+                                }
+                                app.search_results = new_jsn;
                                 if app.search_results.is_empty() {
                                     app.mode = UiMode::Normal;
                                     app.dirty = true;

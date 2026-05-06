@@ -16,37 +16,57 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
 pub static API: &str = "https://t2tunes.site/api/amazon-music";
+pub static FALLBACK: &str = "https://jumo-dl.pages.dev/";
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
 }
 
-// pub async fn get_image(path_str: &str) -> String {
-//     let full_path = concat_strings(Vec::from([
-//         "https://resources.tidal.com/images/",
-//         &path_str.split("-").collect::<Vec<&str>>().join("/"),
-//         "/640x640.jpg",
-//     ]));
-//     let client = Client::new();
-//     let res = client
-//         .get(full_path)
-//         .header(USER_AGENT, AGENT)
-//         .send()
-//         .await
-//         .unwrap()
-//         .bytes()
-//         .await
-//         .unwrap();
-//     let mut path = String::new();
-//     path += env::temp_dir().to_str().unwrap();
-//     path += "/";
-//     path += &uuid::Uuid::new_v4().to_string();
-//     path += ".jpg";
-//     fs::write(&path, res).unwrap();
-//     path
-// }
+pub async fn fallback_metadata(qobuz_id: &str) -> Value {
+    let cli = CLIENT.get().unwrap().clone();
+    let url = concat_strings(Vec::from([FALLBACK, "fetch?track_id=", qobuz_id]));
+    let mut jsn = empty_json();
+    let resp = cli
+        .get(url)
+        .header(USER_AGENT, AGENT)
+        .header(REFERER, FALLBACK)
+        .timeout(Duration::from_secs(7))
+        .send()
+        .await;
+    let res = match resp {
+        Ok(e) => e.error_for_status(),
+        Err(_) => {
+            return jsn;
+        }
+    };
+    if res.is_err() {
+        return jsn;
+    }
+    let resp = res.unwrap().text().await.unwrap();
+    if let Ok(e) = serde_json::from_str::<Value>(&resp) {
+        if let Some(m) = e.get("metadataTrack") {
+            if let Some(bit) = m.get("maximum_bit_depth").and_then(Value::as_i64) {
+                if bit >= 16 {
+                    jsn.as_object_mut()
+                        .unwrap()
+                        .insert("quality".to_string(), json!("flac"));
+                } else {
+                    jsn.as_object_mut()
+                        .unwrap()
+                        .insert("quality".to_string(), json!("opus"));
+                }
+            }
+            if let Some(dur) = m.get("duration").and_then(Value::as_i64) {
+                jsn.as_object_mut()
+                    .unwrap()
+                    .insert("duration".to_string(), json!(dur));
+            }
+        }
+    }
+    jsn
+}
 
-pub async fn get_quality(id: &str) -> Value {
+pub async fn metadata(id: &str) -> Value {
     let cli = CLIENT.get().unwrap().clone();
     let url = concat_strings(Vec::from([API, "/metadata?asin=", id]));
     let mut resp = None;
@@ -59,14 +79,14 @@ pub async fn get_quality(id: &str) -> Value {
     let response = match res {
         Ok(e) => e.error_for_status(),
         Err(_) => {
-            return json!({"quality": ""});
+            return empty_json();
         }
     };
     if !response.is_err() {
         resp = Some(response.unwrap().json::<Value>().await.expect("JSON ERROR"));
     }
     if resp.is_none() {
-        return json!({"quality": ""});
+        return empty_json();
     }
     let res = resp.expect("Status error");
     let mut qual = None;
@@ -225,6 +245,38 @@ pub async fn get_song(id: &str, audio_quality: &str) -> Result<Value, reqwest::E
     }
 }
 
+pub async fn fallback_get_song(
+    qobuz_id: &str,
+    audio_quality: &str,
+) -> Result<Value, reqwest::Error> {
+    let fin_url = concat_strings(Vec::from([
+        FALLBACK,
+        "fetch?track_id=",
+        qobuz_id,
+        "&format_id=",
+        if audio_quality == "flac" { "27" } else { "5" },
+    ]));
+    let client = CLIENT.get().unwrap().clone();
+    let mut body = None;
+    if let Ok(b) = client
+        .get(&fin_url)
+        .header(USER_AGENT, AGENT)
+        .header(REFERER, FALLBACK)
+        .send()
+        .await
+    {
+        if let Ok(jsn) = b.json::<Value>().await {
+            body = Some(jsn);
+        }
+    }
+
+    if body.is_none() {
+        Ok(empty_json())
+    } else {
+        Ok(body.unwrap())
+    }
+}
+
 pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     let s = query
         .split(' ')
@@ -258,23 +310,39 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
     Ok(body)
 }
 
-pub async fn get_songlink_data(id: &str, source: &str) -> Value {
-    let url = concat_strings(Vec::from(["https://song.link/", source, "/", id]));
-    let client = CLIENT.get().unwrap().clone();
-    let mut response = client.get(&url).header(USER_AGENT, AGENT).send().await;
-    while response.is_err() {
-        std::thread::sleep(Duration::from_secs(10));
-        response = client.get(&url).header(USER_AGENT, AGENT).send().await;
-    }
-    let re =
-        regex::Regex::new(r#"<script id="__NEXT_DATA__" type="application/json">(.*?)</script>"#)
-            .unwrap();
-    let json_text = re
-        .captures(&response.unwrap().text().await.unwrap())
-        .unwrap()[1]
+pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
+    let s = query
+        .split(' ')
+        .collect::<Vec<&str>>()
+        .join("%20")
         .to_string();
-    serde_json::from_str(&json_text).unwrap()
+    let q = concat_strings(Vec::from([
+        FALLBACK,
+        "search?query=",
+        s.as_str(),
+    ]));
+    let client = CLIENT.get().unwrap().clone();
+    let mut body = None;
+    if let Ok(b) = client
+        .get(q)
+        .header(USER_AGENT, AGENT)
+        .header(REFERER, FALLBACK)
+        .send()
+        .await
+    {
+        if let Ok(e) = b.json::<Value>().await {
+            if let Some(j) = e.get("tracks"){
+                body = Some(j.clone());
+            }
+        }
+    }
+    if body.is_none() {
+        return Ok(empty_json());
+    }
+    let body = body.unwrap();
+    Ok(body)
 }
+
 pub async fn convert_to_ytm(name: &str) -> Option<String> {
     let client = CLIENT.get().unwrap().clone();
 
@@ -499,28 +567,4 @@ pub fn get_ytrec_array(recs: Value) -> Vec<Value> {
         arr.push(jso);
     }
     arr
-}
-
-pub fn extract_amazon_id(json: &Value) -> Option<String> {
-    let sections = json
-        .get("props")?
-        .get("pageProps")?
-        .get("pageData")?
-        .get("sections")?
-        .as_array()?;
-    for section in sections {
-        if let Some(links) = section.get("links").and_then(|l| l.as_array()) {
-            for link in links {
-                if link.get("platform")?.as_str()? == "amazonStore" {
-                    if let Some(unique_id) = link.get("uniqueId")?.as_str() {
-                        let parts: Vec<&str> = unique_id.split('|').collect();
-                        if parts.len() == 3 {
-                            return Some(parts[2].to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
 }

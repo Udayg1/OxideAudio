@@ -191,21 +191,18 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
                     .enumerate()
                     .map(|(i, t)| {
                         let title = t
-                            .get("document")
-                            .and_then(|v| v.get("title"))
+                            .get("title")
                             .and_then(Value::as_str)
                             .unwrap_or("Unknown");
                         let artist = t
-                            .get("document")
-                            .and_then(|v| v.get("artistName"))
+                            .get("artist")
                             .and_then(Value::as_str)
                             .unwrap_or("Unknown");
                         let prefix = if i == app.selected { "▶ " } else { "  " };
                         let time = t
-                            .get("document")
-                            .and_then(|v| v.get("duration"))
+                            .get("duration")
                             .and_then(Value::as_i64)
-                            .unwrap();
+                            .unwrap_or(0);
                         // let time = 0;
                         let min = time / 60;
                         let sec = time % 60;
