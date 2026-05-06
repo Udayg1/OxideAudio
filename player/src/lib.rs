@@ -185,7 +185,7 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
                             .entry(id.to_string())
                             .or_insert(json!({}));
                         if let Some(obj) = entry.as_object_mut() {
-                            obj.insert("amazon".to_string(), Value::String(qobuz_id_final.clone()));
+                            obj.insert("qobuz".to_string(), Value::String(qobuz_id_final.clone()));
                         }
                     }
                 } else {
