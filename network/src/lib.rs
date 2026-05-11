@@ -17,6 +17,8 @@ pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
 pub static API: &str = "https://t2tunes.site/api/amazon-music";
 pub static FALLBACK: &str = "https://jumo-dl.pages.dev/";
+static SUGGESTION_SOURCE: &str = "https://spotiflac.eclipsemusic.app/9fce354c40f3cbf0/";
+
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
@@ -316,11 +318,7 @@ pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
         .collect::<Vec<&str>>()
         .join("%20")
         .to_string();
-    let q = concat_strings(Vec::from([
-        FALLBACK,
-        "search?query=",
-        s.as_str(),
-    ]));
+    let q = concat_strings(Vec::from([FALLBACK, "search?query=", s.as_str()]));
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
     if let Ok(b) = client
@@ -331,7 +329,7 @@ pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
         .await
     {
         if let Ok(e) = b.json::<Value>().await {
-            if let Some(j) = e.get("tracks"){
+            if let Some(j) = e.get("tracks") {
                 body = Some(j.clone());
             }
         }
@@ -567,4 +565,32 @@ pub fn get_ytrec_array(recs: Value) -> Vec<Value> {
         arr.push(jso);
     }
     arr
+}
+
+pub async fn get_suggestions(query: &str) -> Result<Value, reqwest::Error> {
+    let s = query
+        .split(' ')
+        .collect::<Vec<&str>>()
+        .join("%20")
+        .to_string();
+    let q = concat_strings(Vec::from([SUGGESTION_SOURCE, "search?q=", s.as_str()]));
+    let client = CLIENT.get().unwrap().clone();
+    let mut body = None;
+    if let Ok(b) = client
+        .get(q)
+        .header(USER_AGENT, AGENT)
+        .header(REFERER, SUGGESTION_SOURCE)
+        .send()
+        .await
+    {
+        if let Ok(e) = b.json::<Value>().await {
+            body = Some(e)
+        }
+    }
+
+    if body.is_none() {
+        return Ok(empty_json());
+    }
+    let body = body.unwrap();
+    Ok(body)
 }

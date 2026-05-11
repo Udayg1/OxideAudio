@@ -20,6 +20,7 @@ use std::io::{Stdout, stdout};
 pub enum UiMode {
     Normal,
     Search,
+    Suggestions,
     Results,
 }
 
@@ -43,14 +44,18 @@ pub struct App {
     pub sample_rate: i64,
     pub channel_count: i64,
     pub bitrate: i64,
-    pub msg: String
+    pub msg: String,
 }
 
 pub fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
     enable_raw_mode().unwrap();
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen).unwrap();
-    execute!(stdout, crossterm::terminal::Clear(crossterm::terminal::ClearType::All)).unwrap();
+    execute!(
+        stdout,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+    )
+    .unwrap();
     Terminal::new(CrosstermBackend::new(stdout)).unwrap()
 }
 
@@ -75,8 +80,9 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
         }
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
         UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",
+        UiMode::Suggestions => "↑↓ select, Enter = add, Esc = cancel",
     })
-    .block(Block::default().borders(Borders::ALL).title("[Controls]"));
+    .block(Block::default().borders(Borders::ALL).title("[ Controls ]"));
     let mut cur_time_str = String::new();
     let cur_min = app.cur_time / 60;
     if cur_min > 60 {
@@ -135,11 +141,10 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
                 },
             ]));
         }
-        
     } else {
         text += &app.status;
     }
-    if !app.msg.is_empty(){
+    if !app.msg.is_empty() {
         text += "\nError - ";
         text += &app.msg;
     }
@@ -169,7 +174,10 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
     f.render_widget(body_playlist, chunks[1]);
     f.render_widget(header, chunks[0]);
     f.render_widget(footer, chunks[2]);
-    if matches!(app.mode, UiMode::Search | UiMode::Results) {
+    if matches!(
+        app.mode,
+        UiMode::Search | UiMode::Results | UiMode::Suggestions
+    ) {
         let area = chunks[1];
         f.render_widget(Clear, area);
 
@@ -190,20 +198,10 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
                     .iter()
                     .enumerate()
                     .map(|(i, t)| {
-                        let title = t
-                            .get("title")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Unknown");
-                        let artist = t
-                            .get("artist")
-                            .and_then(Value::as_str)
-                            .unwrap_or("Unknown");
+                        let title = t.get("title").and_then(Value::as_str).unwrap_or("Unknown");
+                        let artist = t.get("artist").and_then(Value::as_str).unwrap_or("Unknown");
                         let prefix = if i == app.selected { "▶ " } else { "  " };
-                        let time = t
-                            .get("duration")
-                            .and_then(Value::as_i64)
-                            .unwrap_or(0);
-                        // let time = 0;
+                        let time = t.get("duration").and_then(Value::as_i64).unwrap_or(0);
                         let min = time / 60;
                         let sec = time % 60;
                         let mut sec_str = sec.to_string();
@@ -226,30 +224,29 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
 
                 let list = List::new(items)
                     .block(Block::default().borders(Borders::ALL).title("[ Results ]"));
+                f.render_widget(list, area);
+            }
+            UiMode::Suggestions => {
+                let items: Vec<ListItem> = app
+                    .search_results
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let title = t.get("title").and_then(Value::as_str).unwrap_or("Unknown");
+                        let artist = t.get("artist").and_then(Value::as_str).unwrap_or("Unknown");
+                        let prefix = if i == app.selected { "▶ " } else { "  " };
+                        ListItem::new(concat_strings(Vec::from([prefix, title, " — ", artist])))
+                    })
+                    .collect();
 
+                let list = List::new(items).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("[ Suggestions ]"),
+                );
                 f.render_widget(list, area);
             }
             _ => {}
         }
     }
 }
-
-// pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-//     let popup_layout = Layout::default()
-//         .direction(Direction::Vertical)
-//         .constraints([
-//             Constraint::Percentage((100 - percent_y) / 2),
-//             Constraint::Percentage(percent_y),
-//             Constraint::Percentage((100 - percent_y) / 2),
-//         ])
-//         .split(r);
-
-//     Layout::default()
-//         .direction(Direction::Horizontal)
-//         .constraints([
-//             Constraint::Percentage((100 - percent_x) / 2),
-//             Constraint::Percentage(percent_x),
-//             Constraint::Percentage((100 - percent_x) / 2),
-//         ])
-//         .split(popup_layout[1])[1]
-// }

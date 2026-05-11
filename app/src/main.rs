@@ -139,7 +139,6 @@ async fn main() {
         "/.local/share/mscply/mpv.log",
     ]));
     let mut mpv = match Mpv::with_initializer(|_init| {
-        // init.set_option("msg-level", "all=trace").unwrap();
         Ok(())
     }) {
         Ok(player) => player,
@@ -466,7 +465,7 @@ async fn main() {
             if last_mode_switch.elapsed() >= skip_every + Duration::from_secs(3) {
                 app.cur_time = 0;
                 app.dur = 0;
-                current -=1;
+                current -= 1;
                 if player_num == 1 {
                     advance_playback(&mut mpv, &urls, &mut current, &mut app);
                 } else if player_num == 2 {
@@ -633,7 +632,7 @@ async fn main() {
                                     fallback_used = true;
                                     ress = fallback_search(&app.search_query).await;
                                 }
-                                if ress.is_err(){
+                                if ress.is_err() {
                                     app.msg = "Couldn't complete the search".to_string();
                                     last_msg = Instant::now();
                                     app.mode = UiMode::Normal;
@@ -642,34 +641,99 @@ async fn main() {
                                 }
                                 let res = ress.unwrap();
                                 let mut new_jsn = Vec::new();
-                                // eprintln!("{res}");
-                                if fallback_used{
-                                    if let Some(v) = res.get("items").and_then(Value::as_array){
-                                        for i in v{
-                                            let name = i.get("performer").and_then(|v| v.get("name")).and_then(Value::as_str).unwrap_or("Unknown");
-                                            let duration = i.get("duration").and_then(Value::as_i64).unwrap_or(0);
-                                            let id = i.get("id").and_then(Value::as_i64).unwrap_or(0).to_string();
-                                            let title = i.get("title").and_then(Value::as_str).unwrap_or("Unknown");
+                                if fallback_used {
+                                    if let Some(v) = res.get("items").and_then(Value::as_array) {
+                                        for i in v {
+                                            let name = i
+                                                .get("performer")
+                                                .and_then(|v| v.get("name"))
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("Unknown");
+                                            let duration = i
+                                                .get("duration")
+                                                .and_then(Value::as_i64)
+                                                .unwrap_or(0);
+                                            let id = i
+                                                .get("id")
+                                                .and_then(Value::as_i64)
+                                                .unwrap_or(0)
+                                                .to_string();
+                                            let title = i
+                                                .get("title")
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("Unknown");
                                             new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
                                         }
                                     }
-                                }
-                                else {
-                                    if let Some(v) = res.get("results").and_then(Value::as_array).and_then(|v| v.first()).and_then(|v| v.get("hits")).and_then(Value::as_array) {
-                                        for i in v{
-                                            let name = i.get("document").and_then(|v| v.get("artistName")).and_then(Value::as_str).unwrap_or("Unknown");
-                                            let duration = i.get("document").and_then(|v| v.get("duration")).and_then(Value::as_i64).unwrap_or(0);
-                                            let id = i.get("document").and_then(|v| v.get("asin")).and_then(Value::as_str).unwrap_or("");
-                                            let title = i.get("document").and_then(|v| v.get("title")).and_then(Value::as_str).unwrap_or("Unknown");
+                                } else {
+                                    if let Some(v) = res
+                                        .get("results")
+                                        .and_then(Value::as_array)
+                                        .and_then(|v| v.first())
+                                        .and_then(|v| v.get("hits"))
+                                        .and_then(Value::as_array)
+                                    {
+                                        for i in v {
+                                            let name = i
+                                                .get("document")
+                                                .and_then(|v| v.get("artistName"))
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("Unknown");
+                                            let duration = i
+                                                .get("document")
+                                                .and_then(|v| v.get("duration"))
+                                                .and_then(Value::as_i64)
+                                                .unwrap_or(0);
+                                            let id = i
+                                                .get("document")
+                                                .and_then(|v| v.get("asin"))
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("");
+                                            let title = i
+                                                .get("document")
+                                                .and_then(|v| v.get("title"))
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("Unknown");
                                             new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "amazon"}));
                                         }
                                     }
                                 }
                                 app.search_results = new_jsn;
                                 if app.search_results.is_empty() {
-                                    app.mode = UiMode::Normal;
-                                    app.dirty = true;
-                                    continue;
+                                    let results = get_suggestions(&app.search_query).await;
+                                    if results.is_err() {
+                                        app.msg = "No suggestions, try different query".to_string();
+                                        last_msg = Instant::now();
+                                        app.mode = UiMode::Normal;
+                                        app.dirty = true;
+                                        continue;
+                                    } else {
+                                        let res = results.unwrap();
+                                        app.mode = UiMode::Suggestions;
+                                        app.search_results.clear();
+                                        if let Some(a) = res.get("tracks").and_then(Value::as_array)
+                                        {
+                                            for i in a {
+                                                let name = i
+                                                    .get("artist")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("Unknown");
+                                                let title = i
+                                                    .get("title")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("Unknown");
+                                                let id = i
+                                                    .get("id")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("");
+                                                let duration = i
+                                                    .get("duration")
+                                                    .and_then(Value::as_i64)
+                                                    .unwrap_or(0);
+                                                app.search_results.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
+                                            }
+                                        }
+                                    }
                                 } else {
                                     app.selected = 0;
                                     app.mode = UiMode::Results;
@@ -723,7 +787,6 @@ async fn main() {
                                     continue;
                                 }
                                 app.queue_len = (urls.len() - current - 1) as i64;
-
                                 app.dirty = true;
                                 if mpv.get_property::<i64>("playlist-pos").unwrap() == -1
                                     && player_num == 1
@@ -769,6 +832,124 @@ async fn main() {
                                     queue_song(&mut mpv2, &urls[current]);
                                 }
                                 app.mode = UiMode::Normal;
+                            }
+                            _ => {}
+                        },
+                        UiMode::Suggestions => match key.code {
+                            KeyCode::Esc => {
+                                app.mode = UiMode::Normal;
+                                app.dirty = true;
+                            }
+                            KeyCode::Up => {
+                                if app.selected > 0 {
+                                    app.selected -= 1;
+                                    app.dirty = true;
+                                }
+                            }
+                            KeyCode::Down => {
+                                if app.selected + 1 < app.search_results.len() {
+                                    app.selected += 1;
+                                    app.dirty = true;
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if app.selected < app.search_results.len() {
+                                    let title = app.search_results[app.selected]
+                                        .get("title")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("Unknown");
+                                    let artist = app.search_results[app.selected]
+                                        .get("artist")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("Unknown");
+                                    let query = title.to_string() + " " + artist;
+                                    let mut fallback_used = false;
+                                    let mut ress = search_result(&query).await;
+                                    if ress.is_err() {
+                                        fallback_used = true;
+                                        ress = fallback_search(&query).await;
+                                    }
+                                    if ress.is_err() {
+                                        app.msg = "No results from suggested input.".to_string();
+                                        last_msg = Instant::now();
+                                        app.dirty = true;
+                                        continue;
+                                    } else {
+                                        let res = ress.unwrap();
+                                        let mut new_jsn = Vec::new();
+                                        if fallback_used {
+                                            if let Some(v) =
+                                                res.get("items").and_then(Value::as_array)
+                                            {
+                                                for i in v {
+                                                    let name = i
+                                                        .get("performer")
+                                                        .and_then(|v| v.get("name"))
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("Unknown");
+                                                    let duration = i
+                                                        .get("duration")
+                                                        .and_then(Value::as_i64)
+                                                        .unwrap_or(0);
+                                                    let id = i
+                                                        .get("id")
+                                                        .and_then(Value::as_i64)
+                                                        .unwrap_or(0)
+                                                        .to_string();
+                                                    let title = i
+                                                        .get("title")
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("Unknown");
+                                                    new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
+                                                }
+                                            }
+                                        } else {
+                                            if let Some(v) = res
+                                                .get("results")
+                                                .and_then(Value::as_array)
+                                                .and_then(|v| v.first())
+                                                .and_then(|v| v.get("hits"))
+                                                .and_then(Value::as_array)
+                                            {
+                                                for i in v {
+                                                    let name = i
+                                                        .get("document")
+                                                        .and_then(|v| v.get("artistName"))
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("Unknown");
+                                                    let duration = i
+                                                        .get("document")
+                                                        .and_then(|v| v.get("duration"))
+                                                        .and_then(Value::as_i64)
+                                                        .unwrap_or(0);
+                                                    let id = i
+                                                        .get("document")
+                                                        .and_then(|v| v.get("asin"))
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("");
+                                                    let title = i
+                                                        .get("document")
+                                                        .and_then(|v| v.get("title"))
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("Unknown");
+                                                    new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "amazon"}));
+                                                }
+                                            }
+                                        }
+                                        app.search_results = new_jsn;
+                                        if app.search_results.is_empty() {
+                                            app.msg = "No results".to_string();
+                                            app.mode = UiMode::Normal;
+                                            last_msg = Instant::now();
+                                            app.dirty = true;
+                                            continue;
+                                        } else {
+                                            app.selected = 0;
+                                            app.mode = UiMode::Results;
+                                            app.dirty = true;
+                                        }
+                                    }
+                                }
                             }
                             _ => {}
                         },

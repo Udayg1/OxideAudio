@@ -47,15 +47,13 @@ pub fn crossfade(mpv1: &mut Mpv, mpv2: &mut Mpv, new_song: &Value) {
         };
 
         let vol1 = (1.0 - progress) * cur_vol;
-        let vol2 = progress * cur_vol; // or 100.0 if you want full next track
+        let vol2 = progress * cur_vol;
 
         mpv1.set_property("volume", vol1).unwrap_or(());
         mpv2.set_property("volume", vol2).unwrap_or(());
 
         std::thread::sleep(Duration::from_millis(10));
     }
-
-    // Ensure volumes are correct at the end
     mpv1.set_property("volume", 0.0).unwrap_or(());
     mpv2.set_property("volume", cur_vol).unwrap_or(());
 }
@@ -103,8 +101,6 @@ pub fn key_index() -> &'static Mutex<Value> {
     })
 }
 
-
-
 pub fn save_cache(json: &std::sync::MutexGuard<'_, Value>) {
     let path = concat_strings(Vec::from([
         &env::var("HOME").unwrap(),
@@ -145,8 +141,12 @@ pub fn spawn_recommendation_worker(name: String, tx: Sender<QueueItem>) {
 
 fn get_cached_id(id: &str, source: &str) -> Option<String> {
     let json = global_json().lock().unwrap();
-    if let Some(e) = json.get(id).and_then(|v| v.get(source)).and_then(Value::as_str){
-        return Some(e.to_string())
+    if let Some(e) = json
+        .get(id)
+        .and_then(|v| v.get(source))
+        .and_then(Value::as_str)
+    {
+        return Some(e.to_string());
     }
     None
 }
@@ -193,7 +193,8 @@ struct Track {
 fn parse_track(v: &Value) -> Option<Track> {
     Some(Track {
         name: v.get("name")?.as_str()?.to_string(),
-        artist: v.get("artist")
+        artist: v
+            .get("artist")
             .and_then(Value::as_str)
             .unwrap_or("Unknown")
             .to_string(),
@@ -211,57 +212,78 @@ enum Source {
     Qobuz,
 }
 
-fn extract_amazon_id(json: &Value) -> Option<String>{
-    if let Some(e) = json.get("results").and_then(Value::as_array).and_then(|v| v.first()).and_then(|v| v.get("hits")).and_then(Value::as_array).and_then(|v| v.first()).and_then(|v| v.get("document")).and_then(|v| v.get("asin")).and_then(Value::as_str){
-        return Some(e.to_string())
+fn extract_amazon_id(json: &Value) -> Option<String> {
+    if let Some(e) = json
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|v| v.first())
+        .and_then(|v| v.get("hits"))
+        .and_then(Value::as_array)
+        .and_then(|v| v.first())
+        .and_then(|v| v.get("document"))
+        .and_then(|v| v.get("asin"))
+        .and_then(Value::as_str)
+    {
+        return Some(e.to_string());
     }
     None
 }
 
-fn extract_qobuz_id(json: &Value) -> Option<String>{
-    if let Some(e) = json.get("items").and_then(Value::as_array).and_then(|v| v.first()).and_then(|v| v.get("id")).and_then(Value::as_str){
-        return Some(e.to_string())
+fn extract_qobuz_id(json: &Value) -> Option<String> {
+    if let Some(e) = json
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|v| v.first())
+        .and_then(|v| v.get("id"))
+        .and_then(Value::as_str)
+    {
+        return Some(e.to_string());
     }
     None
 }
 
-fn cache_id(ytid: &str, source: &str, id: &str){
+fn cache_id(ytid: &str, source: &str, id: &str) {
     let mut json = global_json().lock().unwrap_or_else(|e| e.into_inner());
     let entry = json
-                            .as_object_mut()
-                            .unwrap()
-                            .entry(ytid.to_string())
-                            .or_insert(json!({}));
+        .as_object_mut()
+        .unwrap()
+        .entry(ytid.to_string())
+        .or_insert(json!({}));
     if let Some(obj) = entry.as_object_mut() {
-                                            obj.insert(source.to_string(), Value::String(id.to_string()));
-                                        }
+        obj.insert(source.to_string(), Value::String(id.to_string()));
+    }
 }
 
 async fn resolve_track_id(track: &Track) -> Option<ResolvedTrack> {
-    // try cache first
     if let Some(id) = get_cached_id(&track.yt_id, "amazon") {
-        return Some(ResolvedTrack { id, source: Source::Amazon });
+        return Some(ResolvedTrack {
+            id,
+            source: Source::Amazon,
+        });
     }
-
     let query = format!("{} {}", track.name, track.artist);
-
-    // primary search
     if let Ok(songs) = search_result(&query).await {
         if let Some(id) = extract_amazon_id(&songs) {
             cache_id(&track.yt_id, "amazon", &id);
-            return Some(ResolvedTrack { id, source: Source::Amazon });
+            return Some(ResolvedTrack {
+                id,
+                source: Source::Amazon,
+            });
         }
     }
-
-    // fallback
     if let Some(id) = get_cached_id(&track.yt_id, "qobuz") {
-        return Some(ResolvedTrack { id, source: Source::Qobuz });
+        return Some(ResolvedTrack {
+            id,
+            source: Source::Qobuz,
+        });
     }
-
     if let Ok(songs) = fallback_search(&query).await {
         if let Some(id) = extract_qobuz_id(&songs) {
             cache_id(&track.yt_id, "qobuz", &id);
-            return Some(ResolvedTrack { id, source: Source::Qobuz });
+            return Some(ResolvedTrack {
+                id,
+                source: Source::Qobuz,
+            });
         }
     }
     None
@@ -296,24 +318,22 @@ async fn queue_amazon(
     meta: &Value,
 ) {
     if let Ok(res) = get_song(id, quality).await {
-        if let Some(url) = res.get("streamInfo")
+        if let Some(url) = res
+            .get("streamInfo")
             .and_then(|v| v.get("streamUrl"))
             .and_then(Value::as_str)
         {
-            let key = res.get("decryptionKey").and_then(Value::as_str).unwrap_or("");
+            let key = res
+                .get("decryptionKey")
+                .and_then(Value::as_str)
+                .unwrap_or("");
 
             send_to_queue(tx, track, id, url, key, "amazon", meta);
         }
     }
 }
 
-async fn queue_qobuz(
-    tx: &Sender<QueueItem>,
-    track: &Track,
-    id: &str,
-    quality: &str,
-    meta: &Value,
-) {
+async fn queue_qobuz(tx: &Sender<QueueItem>, track: &Track, id: &str, quality: &str, meta: &Value) {
     if let Ok(res) = fallback_get_song(id, quality).await {
         if let Some(url) = res.get("directUrl").and_then(Value::as_str) {
             send_to_queue(tx, track, id, url, "", "qobuz", meta);
@@ -350,8 +370,8 @@ fn shuffle_in_chunks(arr: &mut [Value]) {
     let mut shuf = 0;
     let arlen = arr.len();
     while shuf < arlen {
-        arr[shuf..std::cmp::min(arlen, shuf+10)].shuffle(&mut rng());
-        shuf+=10;
+        arr[shuf..std::cmp::min(arlen, shuf + 10)].shuffle(&mut rng());
+        shuf += 10;
     }
 }
 
@@ -397,10 +417,7 @@ pub async fn add_song(
     let choice: usize = index.trim().parse().unwrap_or(0);
     if choice <= items.len() {
         let track = &items[choice];
-        let id = track
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let id = track.get("id").and_then(Value::as_str).unwrap_or("");
         let mut audio_quality = "flac";
         let title = track
             .get("title")
@@ -416,9 +433,9 @@ pub async fn add_song(
             audio_quality = "opus";
         }
         let song;
-        if source == "amazon"{
+        if source == "amazon" {
             song = get_song(id, audio_quality).await.unwrap();
-            if !is_streamable(&song){
+            if !is_streamable(&song) {
                 return false;
             }
             let key = song.get("decryptionKey").and_then(Value::as_str).unwrap();
@@ -444,19 +461,16 @@ pub async fn add_song(
                         .get("duration").and_then(Value::as_i64).unwrap_or(0)}),
                 );
             }
-        }
-        else {
+        } else {
             song = fallback_get_song(id, audio_quality).await.unwrap();
-            if let Some(manifest) = song
-                .get("directUrl")
-                .and_then(Value::as_str){
-                    urls.insert(
-                        if cur == 0 && urls.len() == 0 {
-                            0
-                        } else {
-                            cur + 1
-                        },
-                        json!({"url": manifest.to_string(), "name":concat_strings(Vec::from([
+            if let Some(manifest) = song.get("directUrl").and_then(Value::as_str) {
+                urls.insert(
+                    if cur == 0 && urls.len() == 0 {
+                        0
+                    } else {
+                        cur + 1
+                    },
+                    json!({"url": manifest.to_string(), "name":concat_strings(Vec::from([
                             title,
                             " - ",
                             artist
@@ -464,11 +478,9 @@ pub async fn add_song(
                         "source": source
                         ,"duration": track
                             .get("duration").and_then(Value::as_i64).unwrap_or(0)}),
-                    );
-                }
-
+                );
+            }
         }
-
     }
     spawn_recommendation_worker(
         items[choice]
@@ -476,10 +488,7 @@ pub async fn add_song(
             .and_then(Value::as_str)
             .unwrap_or("Unknown")
             .to_string()
-            + items[choice]
-                .get("artist")
-                .and_then(Value::as_str)
-                .unwrap(),
+            + items[choice].get("artist").and_then(Value::as_str).unwrap(),
         tx,
     );
     true
