@@ -201,12 +201,12 @@ fn parse_track(v: &Value) -> Option<Track> {
         yt_id: v.get("id")?.as_str()?.to_string(),
     })
 }
-
+#[derive(Debug)]
 struct ResolvedTrack {
     id: String,
     source: Source,
 }
-
+#[derive(Debug)]
 enum Source {
     Amazon,
     Qobuz,
@@ -235,7 +235,7 @@ fn extract_qobuz_id(json: &Value) -> Option<String> {
         .and_then(Value::as_array)
         .and_then(|v| v.first())
         .and_then(|v| v.get("id"))
-        .and_then(Value::as_str)
+        .and_then(Value::as_i64)
     {
         return Some(e.to_string());
     }
@@ -255,7 +255,9 @@ fn cache_id(ytid: &str, source: &str, id: &str) {
 }
 
 async fn resolve_track_id(track: &Track) -> Option<ResolvedTrack> {
-    if let Some(id) = get_cached_id(&track.yt_id, "amazon") {
+    if let Some(id) = get_cached_id(&track.yt_id, "amazon")
+        && *INFOSTREAM.get().unwrap_or(&false)
+    {
         return Some(ResolvedTrack {
             id,
             source: Source::Amazon,
@@ -481,15 +483,17 @@ pub async fn add_song(
                 );
             }
         }
+        spawn_recommendation_worker(
+            items[choice]
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown")
+                .to_string()
+                + " "
+                + items[choice].get("artist").and_then(Value::as_str).unwrap(),
+            tx,
+        );
+        return true;
     }
-    spawn_recommendation_worker(
-        items[choice]
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or("Unknown")
-            .to_string()
-            + items[choice].get("artist").and_then(Value::as_str).unwrap(),
-        tx,
-    );
-    true
+    false
 }

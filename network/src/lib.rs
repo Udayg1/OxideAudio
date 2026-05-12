@@ -231,7 +231,7 @@ pub async fn get_song(id: &str, audio_quality: &str) -> Result<Value, reqwest::E
         .send()
         .await
     {
-        if let Ok(jsn) = b.json::<Value>().await {
+        if let Ok(jsn) = b.error_for_status()?.json::<Value>().await {
             if let Some(element) = jsn.as_array() {
                 if let Some(first) = element.first() {
                     body = Some(first.clone())
@@ -256,7 +256,7 @@ pub async fn fallback_get_song(
         "fetch?track_id=",
         qobuz_id,
         "&format_id=",
-        if audio_quality == "flac" { "27" } else { "5" },
+        if audio_quality == "flac" { "27" } else { "5" }, "&region=FR",
     ]));
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
@@ -300,7 +300,7 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
         .send()
         .await
     {
-        if let Ok(e) = b.json::<Value>().await {
+        if let Ok(e) = b.error_for_status()?.json::<Value>().await {
             body = Some(e)
         }
     }
@@ -328,7 +328,7 @@ pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
         .send()
         .await
     {
-        if let Ok(e) = b.json::<Value>().await {
+        if let Ok(e) = b.error_for_status()?.json::<Value>().await {
             if let Some(j) = e.get("tracks") {
                 body = Some(j.clone());
             }
