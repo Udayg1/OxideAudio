@@ -7,13 +7,18 @@ use macros::*;
 use network::*;
 use player::*;
 use serde_json::{Value, json};
-use std::fs::OpenOptions;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 use std::{env, fs};
 use tokio::time;
 use ui::*;
+
+fn print_help() {
+    println!(
+        "\nOxideAudio - Rust based music streamer.\n\n[Options] \n \t -c \t Clear cache files \n\t -r \t Turn off recommendations \n\t -n \t Switch to standard AAC format (data saver) \n\t -s \t Turn off song caching \n\t -u \t Update cache index \n\t -h \t Print this help message"
+    );
+}
 
 fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut App) {
     if *current + 1 >= urls.len() {
@@ -47,7 +52,18 @@ fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mu
     app.dirty = true;
 }
 fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut App) {
-    if *current > 0 && urls.len() > 0 {
+    if *current == 0 {
+        match mpv.command("seek", &["0", "absolute-percent"]) {
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("{e}");
+            }
+        }
+        app.dur = urls[*current]
+            .get("duration")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+    } else if *current > 0 && urls.len() > 0 {
         queue_song(mpv, &urls[*current - 1]);
         *current -= 1;
         app.dur = match urls[*current].get("duration").and_then(Value::as_i64) {
@@ -89,42 +105,59 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
 #[tokio::main]
 async fn main() {
     let mut qual = "LOSSLESS";
+    let mut update = false;
+    let mut clear = false;
+    let mut recs = true;
     let args: Vec<String> = env::args().collect();
     let mut save = false;
+    let path = concat_strings(Vec::from([
+        &env::var("HOME").unwrap(),
+        "/.local/share/mscply/songs/",
+        "i",
+    ]))
+    .rsplit_once("/")
+    .unwrap()
+    .0
+    .to_string();
     if args.len() > 1 {
-        let path = concat_strings(Vec::from([
-            &env::var("HOME").unwrap(),
-            "/.local/share/mscply/songs/",
-            "i",
-        ]))
-        .rsplit_once("/")
-        .unwrap()
-        .0
-        .to_string();
         for i in &args[1..] {
             if i == "-c" {
-                match fs::remove_dir_all(&path) {
-                    Ok(_v) => {
-                        println!("Removed cache files");
-                    }
-                    Err(e) => {
-                        println!("Error removing direcotry:  {}, {}", path, e);
-                    }
-                }
-                return;
+                clear = true;
+            } else if i == "-r" {
+                recs = false;
             } else if i == "-s" {
                 save = true;
             } else if i == "-n" {
                 qual = "HIGH";
             } else if i == "-u" {
-                let mut jsn = global_json().lock().unwrap_or_else(|e| e.into_inner());
-                if jsn.get("JSONversion").and_then(Value::as_str).is_none() {
-                    *jsn = convert_to_v1(&jsn);
-                    save_cache(&jsn);
-                    println!("cache file updated!");
-                    return;
-                }
+                update = true;
+            } else if i == "-h" {
+                print_help();
+                return;
             }
+        }
+    }
+    if clear {
+        match fs::remove_dir_all(&path) {
+            Ok(_v) => {
+                println!("Removed cache files");
+            }
+            Err(e) => {
+                println!("Error removing direcotry:  {}, {}", path, e);
+            }
+        }
+        return;
+    }
+    if !recs {
+        RECS.store(false, Ordering::Relaxed);
+    }
+    if update {
+        let mut jsn = global_json().lock().unwrap_or_else(|e| e.into_inner());
+        if jsn.get("JSONversion").and_then(Value::as_str).is_none() {
+            *jsn = convert_to_v1(&jsn);
+            save_cache(&jsn);
+            println!("cache file updated!");
+            return;
         }
     }
     set_url();
@@ -134,13 +167,8 @@ async fn main() {
     SAVE_DATA.set(save).expect("Already set");
     let (tx, rx): (Sender<QueueItem>, Receiver<QueueItem>) = mpsc::channel();
     let (cache_send, cache_recv): (Sender<CacheItem>, Receiver<CacheItem>) = mpsc::channel();
-    let log_file_location = concat_strings(Vec::from([
-        &env::var("HOME").unwrap(),
-        "/.local/share/mscply/mpv.log",
-    ]));
-    let mut mpv = match Mpv::with_initializer(|_init| {
-        Ok(())
-    }) {
+
+    let mut mpv = match Mpv::with_initializer(|_init| Ok(())) {
         Ok(player) => player,
         Err(e) => {
             println!("Failed to start MPV: {}", e);
@@ -183,8 +211,6 @@ async fn main() {
         bitrate: 0,
         msg: String::new(),
     };
-    mpv.observe_property("idle-active", Format::Flag, 2)
-        .unwrap();
     mpv.observe_property("time-pos", Format::Double, 3).unwrap();
     mpv2.observe_property("time-pos", Format::Double, 3)
         .unwrap();
@@ -199,14 +225,7 @@ async fn main() {
     let mut last_msg = Instant::now();
     let update_every = Duration::from_millis(100);
     let skip_every = Duration::from_millis(800);
-    let mut _skipped = false;
     let mut last = terminal.size().unwrap();
-    let mut _logfile = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(log_file_location)
-        .unwrap();
     let mut player_num = 1;
     let mut dura = 0.0;
     let mut tim = 0.0;
@@ -263,17 +282,18 @@ async fn main() {
                 app.cur_time = tim.round() as i64;
                 app.dur = dura.round() as i64;
             }
-            while crossterm::event::poll(Duration::from_millis(0)).unwrap() && last_add < 5 {
-                last_add += 1;
+            while crossterm::event::poll(Duration::from_millis(0)).unwrap() {
                 let _ = crossterm::event::read();
             }
         }
-        last_add = 0;
 
         if SHUTDOWN.load(Ordering::SeqCst) {
             break;
         }
-        if !IS_RUNNING.load(Ordering::SeqCst) && current + 1 == urls.len() {
+        if RECS.load(Ordering::Relaxed)
+            && !IS_RUNNING.load(Ordering::SeqCst)
+            && current + 1 == urls.len()
+        {
             if urls.len() > 1 {
                 spawn_recommendation_worker(urls.last().unwrap().to_string(), tx.clone());
             }
@@ -460,12 +480,13 @@ async fn main() {
         }
         if mpv.get_property::<bool>("idle-active").unwrap()
             && mpv2.get_property::<bool>("idle-active").unwrap()
-            && urls.len() > current + 1
         {
-            if last_mode_switch.elapsed() >= skip_every + Duration::from_secs(3) {
+            if last_mode_switch.elapsed() >= skip_every + Duration::from_secs(3)
+                && urls.len() > current + 1
+            {
                 app.cur_time = 0;
                 app.dur = 0;
-                current -= 1;
+                // current -= 1;
                 if player_num == 1 {
                     advance_playback(&mut mpv, &urls, &mut current, &mut app);
                 } else if player_num == 2 {
@@ -474,6 +495,11 @@ async fn main() {
                 dura = app.dur as f64;
                 last_mode_switch = Instant::now();
                 app.dirty = true;
+            } else {
+                app.dur = 0;
+                app.cur_time = 0;
+                app.status = "Nothing is playing".to_string();
+                current = urls.len();
             }
         }
 
@@ -535,7 +561,6 @@ async fn main() {
                                 }
                             }
                             KeyCode::Char('r') | KeyCode::Char('R') => {
-                                _skipped = true;
                                 app.cur_time = 0;
                                 tim = 0.0;
                                 app.dur = 0;
@@ -548,7 +573,6 @@ async fn main() {
                                 app.dirty = true;
                             }
                             KeyCode::Char('s') | KeyCode::Char('S') => {
-                                _skipped = true;
                                 app.dur = 0;
                                 app.cur_time = 0;
                                 tim = 0.0;
@@ -581,8 +605,9 @@ async fn main() {
                                         }
                                     }
                                     app.cur_time += 5;
-                                    if app.cur_time > app.dur {
+                                    if ((app.dur - app.cur_time) as f64) < CROSSFADE_DUR {
                                         app.cur_time = app.dur;
+                                        break;
                                     }
                                     app.dirty = true;
                                 }
@@ -603,7 +628,7 @@ async fn main() {
                                         }
                                     }
                                 }
-                                app.cur_time -= 5;
+                                app.cur_time = std::cmp::max(app.cur_time - 5, 0);
                                 if app.cur_time > app.dur {
                                     app.cur_time = app.dur;
                                 }
@@ -621,9 +646,6 @@ async fn main() {
                                 if app.search_query.is_empty() {
                                     app.mode = UiMode::Normal;
                                     app.dirty = true;
-                                    continue;
-                                }
-                                while INFOSTREAM.get().is_none() {
                                     continue;
                                 }
                                 let mut fallback_used = false;

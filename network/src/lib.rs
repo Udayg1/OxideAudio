@@ -9,15 +9,21 @@ use std::sync::mpsc::Sender;
 use std::time::Duration;
 use std::{env, fs};
 use uuid;
+use url;
 
 pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
-pub static INFOSTREAM: OnceLock<bool> = OnceLock::new();
+pub static INFOSTREAM: AtomicBool = AtomicBool::new(false);
 static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
 pub static API: &str = "https://t2tunes.site/api/amazon-music";
 pub static FALLBACK: &str = "https://jumo-dl.pages.dev/";
 static SUGGESTION_SOURCE: &str = "https://spotiflac.eclipsemusic.app/9fce354c40f3cbf0/";
+
+pub fn infostream() -> bool {
+    let d = INFOSTREAM.load(std::sync::atomic::Ordering::Relaxed);
+    return d.clone();
+}
 
 pub struct CacheItem {
     pub path: String,
@@ -200,16 +206,19 @@ pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
         CLIENT.set(cli.clone()).unwrap();
-        let res = cli
-            .get("https://t2tunes.site/api/status")
-            .send()
-            .await
-            .unwrap();
-        let jsn = res.json::<Value>().await.unwrap();
-        if jsn.get("amazonMusic").and_then(Value::as_str) == Some("up") {
-            INFOSTREAM.set(true).unwrap();
-        } else {
-            INFOSTREAM.set(false).unwrap();
+        loop {
+            let res = cli
+                .get("https://t2tunes.site/api/status")
+                .send()
+                .await
+                .unwrap();
+            let jsn = res.json::<Value>().await.unwrap();
+            if jsn.get("amazonMusic").and_then(Value::as_str) == Some("up") {
+                INFOSTREAM.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                INFOSTREAM.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            tokio::time::sleep(Duration::from_mins(1)).await;
         }
     });
 }
@@ -256,7 +265,8 @@ pub async fn fallback_get_song(
         "fetch?track_id=",
         qobuz_id,
         "&format_id=",
-        if audio_quality == "flac" { "27" } else { "5" }, "&region=FR",
+        if audio_quality == "flac" { "27" } else { "5" },
+        "&region=FR",
     ]));
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
@@ -280,17 +290,20 @@ pub async fn fallback_get_song(
 }
 
 pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
-    let s = query
-        .split(' ')
-        .collect::<Vec<&str>>()
-        .join("+")
-        .to_string();
-    let q = concat_strings(Vec::from([
-        API,
-        "/search?query=",
-        s.as_str(),
-        "&types=track",
-    ]));
+    // let s = query
+    //     .split(' ')
+    //     .collect::<Vec<&str>>()
+    //     .join("+")
+    //     .to_string();
+    // let q = concat_strings(Vec::from([
+    //     API,
+    //     "/search?query=",
+    //     s.as_str(),
+    //     "&types=track",
+    // ]));
+    let mut q = url::Url::parse(API).unwrap();
+    q.path_segments_mut().unwrap().push("search");
+    q.query_pairs_mut().append_pair("query", query).append_pair("types", "track");
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
     if let Ok(b) = client
@@ -313,12 +326,16 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
 }
 
 pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
-    let s = query
-        .split(' ')
-        .collect::<Vec<&str>>()
-        .join("%20")
-        .to_string();
-    let q = concat_strings(Vec::from([FALLBACK, "search?query=", s.as_str()]));
+    // let s = query
+    //     .split(' ')
+    //     .collect::<Vec<&str>>()
+    //     .join("%20")
+    //     .to_string();
+    // let q = concat_strings(Vec::from([FALLBACK, "search?query=", s.as_str()]));
+    let mut q = url::Url::parse(FALLBACK).unwrap();
+    q.path_segments_mut().unwrap().push("search");
+    q.query_pairs_mut().append_pair("query", query).append_pair("region", "FR");
+    let q = q.to_string().replace("+", "%20");
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
     if let Ok(b) = client

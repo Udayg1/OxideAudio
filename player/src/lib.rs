@@ -18,6 +18,7 @@ static INDEX_CACHE: OnceLock<Mutex<Value>> = OnceLock::new();
 pub static SAVE_DATA: OnceLock<bool> = OnceLock::new();
 pub static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 pub static CROSSFADE_DUR: f64 = 5.5;
+pub static RECS: AtomicBool = AtomicBool::new(true);
 
 pub enum QueueItem {
     Url(Value),
@@ -256,7 +257,7 @@ fn cache_id(ytid: &str, source: &str, id: &str) {
 
 async fn resolve_track_id(track: &Track) -> Option<ResolvedTrack> {
     if let Some(id) = get_cached_id(&track.yt_id, "amazon")
-        && *INFOSTREAM.get().unwrap_or(&false)
+        && infostream()
     {
         return Some(ResolvedTrack {
             id,
@@ -483,16 +484,18 @@ pub async fn add_song(
                 );
             }
         }
-        spawn_recommendation_worker(
-            items[choice]
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or("Unknown")
-                .to_string()
-                + " "
-                + items[choice].get("artist").and_then(Value::as_str).unwrap(),
-            tx,
-        );
+        if RECS.load(Ordering::Relaxed) {
+            spawn_recommendation_worker(
+                items[choice]
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Unknown")
+                    .to_string()
+                    + " "
+                    + items[choice].get("artist").and_then(Value::as_str).unwrap(),
+                tx,
+            );
+        }
         return true;
     }
     false
