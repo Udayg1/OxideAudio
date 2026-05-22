@@ -79,7 +79,7 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
             "[a] Add [p] Pause/Resume [r] Back [s] Skip [f] seek forward [b] seek backward [h] Quit"
         }
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
-        UiMode::Results => "↑↓ select, Enter = add, Esc = cancel",
+        UiMode::Results => "↑↓ select, [q] Try Fallback ,Enter = add, Esc = cancel",
         UiMode::Suggestions => "↑↓ select, Enter = add, Esc = cancel",
     })
     .block(Block::default().borders(Borders::ALL).title("[ Controls ]"));

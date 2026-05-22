@@ -20,6 +20,12 @@ fn print_help() {
     );
 }
 
+fn send_msg(app: &mut App, msg: &str, msg_time: &mut Instant) {
+    app.msg = msg.to_string();
+    *msg_time = Instant::now();
+    app.mode = UiMode::Normal;
+    app.dirty = true;
+}
 fn advance_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut App) {
     if *current + 1 >= urls.len() {
         app.status = "Nothing is playing".to_string();
@@ -649,16 +655,23 @@ async fn main() {
                                     continue;
                                 }
                                 let mut fallback_used = false;
-                                let mut ress = search_result(&app.search_query).await;
-                                if ress.is_err() {
+                                let mut ress;
+                                if infostream() {
+                                    ress = search_result(&app.search_query).await;
+                                    if ress.is_err() {
+                                        fallback_used = true;
+                                        ress = fallback_search(&app.search_query).await;
+                                    }
+                                } else {
                                     fallback_used = true;
                                     ress = fallback_search(&app.search_query).await;
                                 }
                                 if ress.is_err() {
-                                    app.msg = "Couldn't complete the search".to_string();
-                                    last_msg = Instant::now();
-                                    app.mode = UiMode::Normal;
-                                    app.dirty = true;
+                                    send_msg(
+                                        &mut app,
+                                        "Couldn't complete the search",
+                                        &mut last_msg,
+                                    );
                                     continue;
                                 }
                                 let res = ress.unwrap();
@@ -724,10 +737,11 @@ async fn main() {
                                 if app.search_results.is_empty() {
                                     let results = get_suggestions(&app.search_query).await;
                                     if results.is_err() {
-                                        app.msg = "No suggestions, try different query".to_string();
-                                        last_msg = Instant::now();
-                                        app.mode = UiMode::Normal;
-                                        app.dirty = true;
+                                        send_msg(
+                                            &mut app,
+                                            "No suggestions, try different query",
+                                            &mut last_msg,
+                                        );
                                         continue;
                                     } else {
                                         let res = results.unwrap();
@@ -790,6 +804,55 @@ async fn main() {
                                     app.dirty = true;
                                 }
                             }
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                if let Some(e) = app
+                                    .search_results
+                                    .get(0)
+                                    .unwrap()
+                                    .get("source")
+                                    .and_then(Value::as_str)
+                                {
+                                    if e != "qobuz" {
+                                        let data = fallback_search(&app.search_query).await;
+                                        if data.is_err() {
+                                            send_msg(&mut app, "No results", &mut last_msg);
+                                            app.mode = UiMode::Normal;
+                                            app.dirty = true;
+                                        } else {
+                                            let res = data.unwrap();
+                                            let mut new_jsn = Vec::new();
+
+                                            if let Some(v) =
+                                                res.get("items").and_then(Value::as_array)
+                                            {
+                                                for i in v {
+                                                    let name = i
+                                                        .get("performer")
+                                                        .and_then(|v| v.get("name"))
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("Unknown");
+                                                    let duration = i
+                                                        .get("duration")
+                                                        .and_then(Value::as_i64)
+                                                        .unwrap_or(0);
+                                                    let id = i
+                                                        .get("id")
+                                                        .and_then(Value::as_i64)
+                                                        .unwrap_or(0)
+                                                        .to_string();
+                                                    let title = i
+                                                        .get("title")
+                                                        .and_then(Value::as_str)
+                                                        .unwrap_or("Unknown");
+                                                    new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
+                                                }
+                                            }
+
+                                            app.search_results = new_jsn;
+                                        }
+                                    }
+                                }
+                            }
                             KeyCode::Enter => {
                                 let index = (app.selected).to_string();
                                 if !add_song(
@@ -802,10 +865,11 @@ async fn main() {
                                 )
                                 .await
                                 {
-                                    app.msg = String::from("Couldn't queue the last request");
-                                    last_msg = Instant::now();
-                                    app.mode = UiMode::Normal;
-                                    app.dirty = true;
+                                    send_msg(
+                                        &mut app,
+                                        "Couldn't queue the last request",
+                                        &mut last_msg,
+                                    );
                                     continue;
                                 }
                                 app.queue_len = (urls.len() - current - 1) as i64;
@@ -892,9 +956,11 @@ async fn main() {
                                         ress = fallback_search(&query).await;
                                     }
                                     if ress.is_err() {
-                                        app.msg = "No results from suggested input.".to_string();
-                                        last_msg = Instant::now();
-                                        app.dirty = true;
+                                        send_msg(
+                                            &mut app,
+                                            "No results from suggested input.",
+                                            &mut last_msg,
+                                        );
                                         continue;
                                     } else {
                                         let res = ress.unwrap();
@@ -960,10 +1026,7 @@ async fn main() {
                                         }
                                         app.search_results = new_jsn;
                                         if app.search_results.is_empty() {
-                                            app.msg = "No results".to_string();
-                                            app.mode = UiMode::Normal;
-                                            last_msg = Instant::now();
-                                            app.dirty = true;
+                                            send_msg(&mut app, "No results", &mut last_msg);
                                             continue;
                                         } else {
                                             app.selected = 0;
