@@ -546,7 +546,7 @@ pub async fn cache_url(id: &str, url: &str) -> Option<String> {
     Some(path)
 }
 
-pub fn get_ytrec_array(recs: Value) -> Vec<Value> {
+pub fn get_ytrec_array(recs: Value) -> Option<Vec<Value>> {
     let tab0 = recs
         .get("contents")
         .and_then(|v| v.get("singleColumnMusicWatchNextResultsRenderer"))
@@ -554,8 +554,8 @@ pub fn get_ytrec_array(recs: Value) -> Vec<Value> {
         .and_then(|v| v.get("watchNextTabbedResultsRenderer"))
         .and_then(|v| v.get("tabs"))
         .and_then(Value::as_array)
-        .and_then(|a| a.get(0))
-        .unwrap();
+        .and_then(|a| a.get(0)).cloned()
+        .unwrap_or(empty_json());
     let cont = tab0
         .get("tabRenderer")
         .and_then(|v| v.get("content"))
@@ -563,8 +563,11 @@ pub fn get_ytrec_array(recs: Value) -> Vec<Value> {
         .and_then(|v| v.get("content"))
         .and_then(|v| v.get("playlistPanelRenderer"))
         .and_then(|v| v.get("contents"))
-        .and_then(Value::as_array)
-        .unwrap();
+        .and_then(Value::as_array).cloned()
+        .unwrap_or(Vec::new());
+    if cont.is_empty(){
+        return None
+    }
     let mut arr = Vec::new();
     for i in cont.iter().skip(1) {
         let id = i
@@ -589,7 +592,7 @@ pub fn get_ytrec_array(recs: Value) -> Vec<Value> {
         let jso = json!({"id": id, "name": name, "artist": artist});
         arr.push(jso);
     }
-    arr
+    Some(arr)
 }
 
 pub async fn get_suggestions(query: &str) -> Result<Value, reqwest::Error> {

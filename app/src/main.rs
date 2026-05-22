@@ -877,9 +877,6 @@ async fn main() {
                                 if mpv.get_property::<i64>("playlist-pos").unwrap() == -1
                                     && player_num == 1
                                 {
-                                    if current != 0 {
-                                        current += 1;
-                                    }
                                     app.status = urls[current]
                                         .get("name")
                                         .and_then(Value::as_str)
@@ -898,9 +895,9 @@ async fn main() {
                                 } else if mpv2.get_property::<i64>("playlist-pos").unwrap() == -1
                                     && player_num == 2
                                 {
-                                    if current != 0 {
-                                        current += 1;
-                                    }
+                                    // if current != 0 {
+                                    //     current += 1;
+                                    // }
                                     app.status = urls[current]
                                         .get("name")
                                         .and_then(Value::as_str)

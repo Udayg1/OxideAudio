@@ -159,8 +159,12 @@ async fn run_worker(name: String, tx: Sender<QueueItem>) {
         Some(v) => v,
         None => return,
     };
-    let recs = get_ytrecs(&new_iid).await;
-    let mut arr = get_ytrec_array(recs);
+    let mut recs_array = None;
+    while recs_array.is_none() {
+        let recs = get_ytrecs(&new_iid).await;
+        recs_array = get_ytrec_array(recs);
+    }
+    let mut arr = recs_array.unwrap();
     shuffle_in_chunks(&mut arr);
     let mut processed = 0;
     for item in arr {
@@ -471,7 +475,7 @@ pub async fn add_song(
                     if cur == 0 && urls.len() == 0 {
                         0
                     } else {
-                        cur + 1
+                        std::cmp::min(cur + 1, urls.len())
                     },
                     json!({"url": manifest.to_string(), "name":concat_strings(Vec::from([
                             title,
