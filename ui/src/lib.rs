@@ -6,6 +6,7 @@ use macros::concat_strings;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
+    layout::Rect,
     layout::{Constraint, Direction, Layout},
     symbols::merge,
     widgets::{Block, Borders, Paragraph},
@@ -17,11 +18,13 @@ use ratatui::{
 use serde_json::Value;
 use std::io::{Stdout, stdout};
 
+#[derive(PartialEq)]
 pub enum UiMode {
     Normal,
     Search,
     Suggestions,
     Results,
+    HelpPage,
 }
 
 pub struct Options {
@@ -47,6 +50,18 @@ pub struct App {
     pub msg: String,
 }
 
+pub fn show_controls_page(f: &mut ratatui::Frame) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Fill(1)])
+        .split(f.area());
+    let text = "[a] queue a song\n[s] skip to the next song in queue\n[c] show this controls page\n[f] jump 5 seconds forward in the current song\n[b] jump 5 seconds backward in the current song\n[p] play/pause the current song\n[h] quit";
+    let header =
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("[ Controls ]"));
+    let center = centered_rect(40, 40, chunks[0]);
+    f.render_widget(header, center);
+}
+
 pub fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
     enable_raw_mode().unwrap();
     let mut stdout = stdout();
@@ -66,21 +81,32 @@ pub fn restore_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) {
 }
 
 pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _options: &Options) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(5),
-            Constraint::Fill(1),
-            Constraint::Length(3),
-        ])
-        .split(f.area());
+    let chunks;
+    if app.mode == UiMode::Normal {
+        chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(5), Constraint::Fill(1)])
+            .split(f.area());
+    } else {
+        chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(5),
+                Constraint::Fill(1),
+                Constraint::Length(3),
+            ])
+            .split(f.area());
+    }
+
     let footer = Paragraph::new(match app.mode {
-        UiMode::Normal => {
-            "[a] Add [p] Pause/Resume [r] Back [s] Skip [f] seek forward [b] seek backward [h] Quit"
-        }
+        UiMode::Normal => "",
         UiMode::Search => "Type search, Enter = search, Esc = cancel",
-        UiMode::Results => "↑↓ select, [q] Try Fallback ,Enter = add, Esc = cancel",
+        UiMode::Results => "↑↓ select, [q] Try Fallback, Enter = add, Esc = cancel",
         UiMode::Suggestions => "↑↓ select, Enter = add, Esc = cancel",
+        UiMode::HelpPage => {
+            show_controls_page(f);
+            return;
+        }
     })
     .block(Block::default().borders(Borders::ALL).title("[ Controls ]"));
     let mut cur_time_str = String::new();
@@ -173,7 +199,9 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
     );
     f.render_widget(body_playlist, chunks[1]);
     f.render_widget(header, chunks[0]);
-    f.render_widget(footer, chunks[2]);
+    if app.mode != UiMode::Normal {
+        f.render_widget(footer, chunks[2]);
+    }
     if matches!(
         app.mode,
         UiMode::Search | UiMode::Results | UiMode::Suggestions
@@ -249,4 +277,24 @@ pub fn draw_ui(f: &mut ratatui::Frame, app: &mut App, playlist: &[Value], _optio
             _ => {}
         }
     }
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }

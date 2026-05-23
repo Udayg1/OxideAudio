@@ -206,7 +206,7 @@ async fn main() {
         selected: 0,
         queue_len: 0,
         paused: false,
-        mode: UiMode::Normal,
+        mode: UiMode::HelpPage,
         dirty: true,
         cur_time: 0,
         dur: 0,
@@ -235,6 +235,7 @@ async fn main() {
     let mut player_num = 1;
     let mut dura = 0.0;
     let mut tim = 0.0;
+
     loop {
         last_add = 0;
         if (!mpv.get_property::<bool>("idle-active").unwrap()
@@ -542,6 +543,10 @@ async fn main() {
                 match event.unwrap() {
                     Event::Key(key) => match app.mode {
                         UiMode::Normal => match key.code {
+                            KeyCode::Char('c') | KeyCode::Char('C') => {
+                                app.dirty = true;
+                                app.mode = UiMode::HelpPage;
+                            }
                             KeyCode::Char('h') | KeyCode::Char('H') => {
                                 app.dirty = true;
                                 SHUTDOWN.store(true, Ordering::SeqCst);
@@ -797,6 +802,9 @@ async fn main() {
                                     app.selected -= 1;
                                     app.dirty = true;
                                 }
+                                // if current != 0 {
+                                //     current += 1;
+                                // }
                             }
                             KeyCode::Down => {
                                 if app.selected + 1 < app.search_results.len() {
@@ -895,9 +903,6 @@ async fn main() {
                                 } else if mpv2.get_property::<i64>("playlist-pos").unwrap() == -1
                                     && player_num == 2
                                 {
-                                    // if current != 0 {
-                                    //     current += 1;
-                                    // }
                                     app.status = urls[current]
                                         .get("name")
                                         .and_then(Value::as_str)
@@ -1034,6 +1039,12 @@ async fn main() {
                                 }
                             }
                             _ => {}
+                        },
+                        UiMode::HelpPage => match key.code {
+                            _ => {
+                                app.mode = UiMode::Normal;
+                                app.dirty = true;
+                            }
                         },
                     },
                     Event::Resize(_, _) => {
