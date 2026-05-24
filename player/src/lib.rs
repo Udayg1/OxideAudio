@@ -30,7 +30,10 @@ pub fn crossfade(mpv1: &mut Mpv, mpv2: &mut Mpv, new_song: &Value) {
 
     queue_song(mpv2, &new_song);
 
-    let dur: f64 = mpv1.get_property("duration").unwrap();
+    let dur: f64 = mpv1.get_property("duration").unwrap_or(0.0);
+    if dur == 0.0 {
+        return;
+    }
     let start_time = Instant::now();
 
     while start_time.elapsed().as_secs_f64() < CROSSFADE_DUR {
@@ -483,7 +486,7 @@ pub async fn add_song(
                             artist
                         ])), "id": id.to_string(),
                         "source": source
-                        ,"duration": track
+                        ,"duration": song
                             .get("duration").and_then(Value::as_i64).unwrap_or(0)}),
                 );
             }

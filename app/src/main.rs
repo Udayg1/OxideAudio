@@ -1041,6 +1041,7 @@ async fn main() {
                             _ => {}
                         },
                         UiMode::HelpPage => match key.code {
+                            KeyCode::Down | KeyCode::Up | KeyCode::Left | KeyCode::Right => {}
                             _ => {
                                 app.mode = UiMode::Normal;
                                 app.dirty = true;
