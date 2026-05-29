@@ -17,8 +17,7 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
 pub static API: &str = "https://t2tunes.site/api/amazon-music";
-pub static FALLBACK: &str = "https://jumo-dl.pages.dev/";
-static FALLBACK_UP: AtomicBool = AtomicBool::new(true);
+pub static FALLBACK: &str = "https://qobuz.kennyy.com.br";
 static SUGGESTION_SOURCE: &str = "https://spotiflac.eclipsemusic.app/9fce354c40f3cbf0/";
 
 pub struct CacheItem {
@@ -33,7 +32,7 @@ pub fn infostream() -> bool {
 
 pub async fn fallback_metadata(qobuz_id: &str) -> Value {
     let cli = CLIENT.get().unwrap().clone();
-    let url = concat_strings(Vec::from([FALLBACK, "fetch?track_id=", qobuz_id]));
+    let url = concat_strings(Vec::from([FALLBACK, "/api/get-music?offset=0&q=", qobuz_id]));
     let mut jsn = empty_json();
     let resp = cli
         .get(url)
@@ -53,7 +52,14 @@ pub async fn fallback_metadata(qobuz_id: &str) -> Value {
     }
     let resp = res.unwrap().text().await.unwrap();
     if let Ok(e) = serde_json::from_str::<Value>(&resp) {
-        if let Some(m) = e.get("metadataTrack") {
+        
+        if let Some(m) = e
+            .get("data")
+            .and_then(|v| v.get("tracks"))
+            .and_then(|v| v.get("items"))
+            .and_then(Value::as_array)
+            .and_then(|v| v.get(0))
+        {
             if let Some(bit) = m.get("maximum_bit_depth").and_then(Value::as_i64) {
                 if bit >= 16 {
                     jsn.as_object_mut()
@@ -203,18 +209,10 @@ pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
     });
 }
 
-async fn set_fallback() {
-    if fallback_get_song("227149576", "flac").await.is_err() {
-        FALLBACK_UP.store(false, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
 pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
         CLIENT.set(cli.clone()).unwrap();
-
-        set_fallback().await;
 
         loop {
             let res = cli
@@ -272,7 +270,7 @@ pub async fn fallback_get_song(
 ) -> Result<Value, reqwest::Error> {
     let fin_url = concat_strings(Vec::from([
         FALLBACK,
-        "fetch?track_id=",
+        "/api/download-music?track_id=",
         qobuz_id,
         "&format_id=",
         if audio_quality == "flac" { "27" } else { "5" },
@@ -280,6 +278,7 @@ pub async fn fallback_get_song(
     let client = CLIENT.get().unwrap().clone();
 
     let mut body = None;
+
     if let Ok(b) = client
         .get(&fin_url)
         .header(USER_AGENT, AGENT)
@@ -287,7 +286,7 @@ pub async fn fallback_get_song(
         .send()
         .await
     {
-        if let Ok(jsn) = b.json::<Value>().await {
+        if let Ok(jsn) = b.error_for_status()?.json::<Value>().await {
             body = Some(jsn);
         }
     }
@@ -339,23 +338,22 @@ pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
 
 pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
     let mut q = url::Url::parse(FALLBACK).unwrap();
-    q.path_segments_mut().unwrap().push("search");
-    q.query_pairs_mut().append_pair("query", query);
+    q.path_segments_mut().unwrap().push("api");
+    q.path_segments_mut().unwrap().push("get-music");
+    q.query_pairs_mut().append_pair("offset", "0");
+    q.query_pairs_mut().append_pair("q", query);
 
     let q = q.to_string().replace("+", "%20");
     let client = CLIENT.get().unwrap().clone();
+    
 
     let mut body = None;
-    if let Ok(b) = client
-        .get(q)
-        .header(USER_AGENT, AGENT)
-        .header(REFERER, FALLBACK)
-        .send()
-        .await
-    {
-        if let Ok(e) = b.error_for_status()?.json::<Value>().await {
-            if let Some(j) = e.get("tracks") {
-                body = Some(j.clone());
+    if let Ok(b) = client.get(q).header(USER_AGENT, AGENT).send().await {
+        if let Ok(e) = b.error_for_status()?.text().await {
+            if let Ok(data) = serde_json::from_str::<Value>(&e) {
+                if let Some(j) = data.get("data").and_then(|v| v.get("tracks")) {
+                    body = Some(j.clone());
+                }
             }
         }
     }
@@ -554,7 +552,8 @@ pub fn get_ytrec_array(recs: Value) -> Option<Vec<Value>> {
         .and_then(|v| v.get("watchNextTabbedResultsRenderer"))
         .and_then(|v| v.get("tabs"))
         .and_then(Value::as_array)
-        .and_then(|a| a.get(0)).cloned()
+        .and_then(|a| a.get(0))
+        .cloned()
         .unwrap_or(empty_json());
     let cont = tab0
         .get("tabRenderer")
@@ -563,10 +562,11 @@ pub fn get_ytrec_array(recs: Value) -> Option<Vec<Value>> {
         .and_then(|v| v.get("content"))
         .and_then(|v| v.get("playlistPanelRenderer"))
         .and_then(|v| v.get("contents"))
-        .and_then(Value::as_array).cloned()
+        .and_then(Value::as_array)
+        .cloned()
         .unwrap_or(Vec::new());
-    if cont.is_empty(){
-        return None
+    if cont.is_empty() {
+        return None;
     }
     let mut arr = Vec::new();
     for i in cont.iter().skip(1) {

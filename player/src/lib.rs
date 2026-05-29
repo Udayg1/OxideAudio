@@ -169,6 +169,7 @@ async fn run_worker(name: String, tx: Sender<QueueItem>) {
     }
     let mut arr = recs_array.unwrap();
     shuffle_in_chunks(&mut arr);
+    
     let mut processed = 0;
     for item in arr {
         if should_shutdown() {
@@ -303,7 +304,7 @@ async fn fetch_and_queue(tx: &Sender<QueueItem>, track: &Track, resolved: Resolv
     if should_shutdown() {
         return;
     }
-
+    
     let quality_json = match resolved.source {
         Source::Amazon => metadata(&resolved.id).await,
         Source::Qobuz => fallback_metadata(&resolved.id).await,
@@ -345,7 +346,7 @@ async fn queue_amazon(
 
 async fn queue_qobuz(tx: &Sender<QueueItem>, track: &Track, id: &str, quality: &str, meta: &Value) {
     if let Ok(res) = fallback_get_song(id, quality).await {
-        if let Some(url) = res.get("directUrl").and_then(Value::as_str) {
+        if let Some(url) = res.get("data").and_then(|v| v.get("url")).and_then(Value::as_str) {
             send_to_queue(tx, track, id, url, "", "qobuz", meta);
         }
     }
@@ -473,7 +474,8 @@ pub async fn add_song(
             }
         } else {
             song = fallback_get_song(id, audio_quality).await.unwrap();
-            if let Some(manifest) = song.get("directUrl").and_then(Value::as_str) {
+
+            if let Some(manifest) = song.get("data").and_then(|v| v.get("url")).and_then(Value::as_str) {
                 urls.insert(
                     if cur == 0 && urls.len() == 0 {
                         0
@@ -486,7 +488,7 @@ pub async fn add_song(
                             artist
                         ])), "id": id.to_string(),
                         "source": source
-                        ,"duration": song
+                        ,"duration": track
                             .get("duration").and_then(Value::as_i64).unwrap_or(0)}),
                 );
             }
