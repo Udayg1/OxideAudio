@@ -1,12 +1,14 @@
+use base64::{Engine as _, engine::general_purpose};
 use macros::*;
 use reqwest::Client;
-use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
+use reqwest::header::{CONTENT_TYPE, COOKIE, REFERER, USER_AGENT};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicI64};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use std::{env, fs};
 use url;
 use uuid;
@@ -17,12 +19,241 @@ static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
 pub static API: &str = "https://t2tunes.site/api/amazon-music";
-pub static FALLBACK: &str = "https://qobuz.kennyy.com.br";
+static LAST_CHALLENGE: AtomicI64 = AtomicI64::new(0);
+pub static FALLBACK: &str = "https://qobuz.squid.wtf";
 static SUGGESTION_SOURCE: &str = "https://spotiflac.eclipsemusic.app/9fce354c40f3cbf0/";
 
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
+}
+
+use sha2::{Digest, Sha256};
+
+// ----------------------------
+// helpers
+// ----------------------------
+
+fn hex_to_bytes(hex_str: &str) -> Vec<u8> {
+    hex::decode(hex_str).expect("Invalid hex string")
+}
+
+fn buffer_starts_with(buf: &[u8], prefix: &[u8]) -> bool {
+    buf.starts_with(prefix)
+}
+
+fn buffer_to_hex(buf: &[u8]) -> String {
+    hex::encode(buf)
+}
+
+// ----------------------------
+// password buffer
+// ----------------------------
+
+struct PasswordBuffer {
+    nonce: Vec<u8>,
+    buffer: Vec<u8>,
+}
+
+impl PasswordBuffer {
+    fn new(nonce: Vec<u8>) -> Self {
+        let mut buffer = vec![0u8; nonce.len() + 4];
+        buffer[..nonce.len()].copy_from_slice(&nonce);
+
+        Self { nonce, buffer }
+    }
+
+    fn set_counter(&mut self, counter: u32) -> Vec<u8> {
+        let start = self.nonce.len();
+        self.buffer[start..].copy_from_slice(&counter.to_be_bytes());
+        self.buffer.clone()
+    }
+}
+
+// ----------------------------
+// derive_key
+// ----------------------------
+
+fn derive_key(
+    algorithm: &str,
+    salt: &[u8],
+    password: &[u8],
+    cost: u32,
+    key_length: usize,
+) -> Vec<u8> {
+    let mut derived: Vec<u8> = Vec::new();
+
+    for i in 0..std::cmp::max(1, cost) {
+        let data = if i == 0 {
+            [salt, password].concat()
+        } else {
+            derived.clone()
+        };
+
+        let hash = match algorithm.to_lowercase().as_str() {
+            "sha-256" | "sha256" => {
+                let mut hasher = Sha256::new();
+                hasher.update(&data);
+                hasher.finalize().to_vec()
+            }
+            _ => panic!("Only SHA-256 supported"),
+        };
+
+        derived = hash[..key_length].to_vec();
+    }
+
+    derived
+}
+
+// ----------------------------
+// parameters struct
+// ----------------------------
+
+#[derive(Debug, Deserialize)]
+struct Parameters {
+    nonce: String,
+    salt: String,
+    #[serde(rename = "keyPrefix")]
+    key_prefix: String,
+    cost: u32,
+    #[serde(rename = "keyLength")]
+    key_length: Option<usize>,
+    algorithm: Option<String>,
+}
+
+// ----------------------------
+// solve_challenge
+// ----------------------------
+
+fn solve_challenge(parameters: Parameters) -> Option<serde_json::Value> {
+    let counter_start = 0;
+    let counter_step = 1;
+    let timeout_secs = 10;
+    let nonce = hex_to_bytes(&parameters.nonce);
+    let salt = hex_to_bytes(&parameters.salt);
+    let key_prefix = parameters.key_prefix;
+    let cost = parameters.cost;
+    let key_length = parameters.key_length.unwrap_or(32);
+    let algorithm = parameters
+        .algorithm
+        .unwrap_or_else(|| "SHA-256".to_string());
+
+    let key_prefix_bytes = if key_prefix.len() % 2 == 0 {
+        Some(hex_to_bytes(&key_prefix))
+    } else {
+        None
+    };
+
+    let mut password = PasswordBuffer::new(nonce);
+
+    let start = Instant::now();
+    let mut counter = counter_start;
+
+    loop {
+        if start.elapsed() > Duration::from_secs(timeout_secs) {
+            return None;
+        }
+
+        let pwd = password.set_counter(counter);
+
+        let derived = derive_key(&algorithm, &salt, &pwd, cost, key_length);
+
+        let ok = if let Some(prefix_bytes) = &key_prefix_bytes {
+            buffer_starts_with(&derived, prefix_bytes)
+        } else {
+            buffer_to_hex(&derived).starts_with(&key_prefix)
+        };
+
+        if ok {
+            return Some(json!({
+                "counter": counter,
+                "derivedKey": buffer_to_hex(&derived),
+                "time": start.elapsed().as_secs_f64() * 1000.0
+            }));
+        }
+
+        counter = counter.wrapping_add(counter_step);
+    }
+}
+
+fn get_time() -> i64 {
+    let mil_time = std::time::SystemTime::now();
+    (mil_time
+        .duration_since(UNIX_EPOCH)
+        .expect("fkin time????")
+        .as_secs_f64()
+        * 1000.0) as i64
+}
+
+async fn fetch_challenge() -> Result<String, reqwest::Error> {
+    let epoch_time = get_time();
+    let client = CLIENT.get().unwrap().clone();
+    let url = format!("{FALLBACK}/api/altcha/challenge?ts={epoch_time}");
+    let res = client
+        .get(url)
+        .header(USER_AGENT, AGENT)
+        .header(REFERER, FALLBACK)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(res)
+}
+
+fn make_payload(final_json: &str) -> String {
+    let encoded = general_purpose::STANDARD.encode(final_json);
+    format!("{{\"payload\" : \"{encoded}\"}}")
+}
+
+async fn post_payload(json: String) -> Result<(), reqwest::Error> {
+    let client = CLIENT.get().unwrap().clone();
+    let url = format!("{FALLBACK}/api/altcha/verify");
+    let _ = client
+        .post(url)
+        .header(REFERER, FALLBACK)
+        .header(USER_AGENT, AGENT)
+        .header(CONTENT_TYPE, "application/json")
+        .body(json)
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
+async fn update_challenge() -> bool {
+    let mut challenge_json = None;
+    while challenge_json.is_none() {
+        let mut challenge = fetch_challenge().await;
+        while challenge.is_err() {
+            challenge = fetch_challenge().await;
+        }
+        let challenge_string = challenge.unwrap();
+        let chall_json = serde_json::from_str::<Value>(&challenge_string);
+        if chall_json.is_err() {
+            continue;
+        }
+        challenge_json = Some(chall_json.unwrap());
+    }
+    let final_challenge = challenge_json.unwrap();
+    if let Some(params) = final_challenge.get("parameters") {
+        let solved = solve_challenge(serde_json::from_value::<Parameters>(params.clone()).unwrap());
+        if solved.is_none() {
+            return false;
+        } else {
+            let payload_json =
+                json!({"challenge": final_challenge, "solution":solved.unwrap()}).to_string();
+            let payload_string = make_payload(&payload_json);
+            let t = get_time();
+            if post_payload(payload_string).await.is_err() {
+                return false;
+            }
+            LAST_CHALLENGE.store(t, std::sync::atomic::Ordering::Relaxed);
+            return true;
+        }
+    } else {
+        false
+    }
 }
 
 pub fn infostream() -> bool {
@@ -32,7 +263,11 @@ pub fn infostream() -> bool {
 
 pub async fn fallback_metadata(qobuz_id: &str) -> Value {
     let cli = CLIENT.get().unwrap().clone();
-    let url = concat_strings(Vec::from([FALLBACK, "/api/get-music?offset=0&q=", qobuz_id]));
+    let url = concat_strings(Vec::from([
+        FALLBACK,
+        "/api/get-music?offset=0&q=",
+        qobuz_id,
+    ]));
     let mut jsn = empty_json();
     let resp = cli
         .get(url)
@@ -52,7 +287,6 @@ pub async fn fallback_metadata(qobuz_id: &str) -> Value {
     }
     let resp = res.unwrap().text().await.unwrap();
     if let Ok(e) = serde_json::from_str::<Value>(&resp) {
-        
         if let Some(m) = e
             .get("data")
             .and_then(|v| v.get("tracks"))
@@ -213,8 +447,18 @@ pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
         CLIENT.set(cli.clone()).unwrap();
-
+        let mut last_update = Instant::now();
+        let mut res = update_challenge().await;
+        while !res {
+            res = update_challenge().await;
+        }
         loop {
+            if last_update.elapsed() >= Duration::from_mins(15) {
+                let res = update_challenge().await;
+                if res {
+                    last_update = Instant::now();
+                }
+            }
             let res = cli
                 .get("https://t2tunes.site/api/status")
                 .send()
@@ -282,6 +526,15 @@ pub async fn fallback_get_song(
     if let Ok(b) = client
         .get(&fin_url)
         .header(USER_AGENT, AGENT)
+        .header(
+            COOKIE,
+            format!(
+                "captcha_verified_at={}",
+                LAST_CHALLENGE
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    .to_string()
+            ),
+        )
         .header(REFERER, FALLBACK)
         .send()
         .await
@@ -345,7 +598,6 @@ pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
 
     let q = q.to_string().replace("+", "%20");
     let client = CLIENT.get().unwrap().clone();
-    
 
     let mut body = None;
     if let Ok(b) = client.get(q).header(USER_AGENT, AGENT).send().await {
