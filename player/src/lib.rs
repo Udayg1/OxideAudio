@@ -169,7 +169,7 @@ async fn run_worker(name: String, tx: Sender<QueueItem>) {
     }
     let mut arr = recs_array.unwrap();
     shuffle_in_chunks(&mut arr);
-    
+
     let mut processed = 0;
     for item in arr {
         if should_shutdown() {
@@ -197,6 +197,7 @@ struct Track {
     name: String,
     artist: String,
     yt_id: String,
+    duration: u64,
 }
 
 fn parse_track(v: &Value) -> Option<Track> {
@@ -208,6 +209,7 @@ fn parse_track(v: &Value) -> Option<Track> {
             .unwrap_or("Unknown")
             .to_string(),
         yt_id: v.get("id")?.as_str()?.to_string(),
+        duration: v.get("duration").and_then(Value::as_u64)?,
     })
 }
 #[derive(Debug)]
@@ -217,20 +219,17 @@ struct ResolvedTrack {
 }
 #[derive(Debug)]
 enum Source {
-    Amazon,
+    _Amazon,
+    Tidal,
     Qobuz,
 }
 
-fn extract_amazon_id(json: &Value) -> Option<String> {
+fn extract_id(json: &Value) -> Option<String> {
     if let Some(e) = json
-        .get("results")
+        .get("tracks")
         .and_then(Value::as_array)
         .and_then(|v| v.first())
-        .and_then(|v| v.get("hits"))
-        .and_then(Value::as_array)
-        .and_then(|v| v.first())
-        .and_then(|v| v.get("document"))
-        .and_then(|v| v.get("asin"))
+        .and_then(|v| v.get("id"))
         .and_then(Value::as_str)
     {
         return Some(e.to_string());
@@ -264,21 +263,21 @@ fn cache_id(ytid: &str, source: &str, id: &str) {
 }
 
 async fn resolve_track_id(track: &Track) -> Option<ResolvedTrack> {
-    if let Some(id) = get_cached_id(&track.yt_id, "amazon")
+    if let Some(id) = get_cached_id(&track.yt_id, "tidal")
         && infostream()
     {
         return Some(ResolvedTrack {
             id,
-            source: Source::Amazon,
+            source: Source::Tidal,
         });
     }
     let query = format!("{} {}", track.name, track.artist);
-    if let Ok(songs) = search_result(&query).await {
-        if let Some(id) = extract_amazon_id(&songs) {
-            cache_id(&track.yt_id, "amazon", &id);
+    if let Ok(songs) = search(&query).await {
+        if let Some(id) = extract_id(&songs) {
+            cache_id(&track.yt_id, "tidal", &id);
             return Some(ResolvedTrack {
                 id,
-                source: Source::Amazon,
+                source: Source::Tidal,
             });
         }
     }
@@ -304,10 +303,11 @@ async fn fetch_and_queue(tx: &Sender<QueueItem>, track: &Track, resolved: Resolv
     if should_shutdown() {
         return;
     }
-    
+
     let quality_json = match resolved.source {
-        Source::Amazon => metadata(&resolved.id).await,
+        Source::Tidal => json!({"quality": "flac"}),
         Source::Qobuz => fallback_metadata(&resolved.id).await,
+        _ => return,
     };
 
     let quality = match quality_json.get("quality").and_then(Value::as_str) {
@@ -316,37 +316,32 @@ async fn fetch_and_queue(tx: &Sender<QueueItem>, track: &Track, resolved: Resolv
     };
 
     match resolved.source {
-        Source::Amazon => queue_amazon(tx, track, &resolved.id, quality, &quality_json).await,
+        Source::Tidal => queue_tidal(tx, track, &resolved.id, quality, &quality_json).await,
         Source::Qobuz => queue_qobuz(tx, track, &resolved.id, quality, &quality_json).await,
+        _ => return,
     }
 }
 
-async fn queue_amazon(
-    tx: &Sender<QueueItem>,
-    track: &Track,
-    id: &str,
-    quality: &str,
-    meta: &Value,
-) {
+async fn queue_tidal(tx: &Sender<QueueItem>, track: &Track, id: &str, quality: &str, meta: &Value) {
     if let Ok(res) = get_song(id, quality).await {
-        if let Some(url) = res
-            .get("streamInfo")
-            .and_then(|v| v.get("streamUrl"))
-            .and_then(Value::as_str)
-        {
+        if let Some(url) = res.get("url").and_then(Value::as_str) {
             let key = res
                 .get("decryptionKey")
                 .and_then(Value::as_str)
                 .unwrap_or("");
 
-            send_to_queue(tx, track, id, url, key, "amazon", meta);
+            send_to_queue(tx, track, id, url, key, "tidal", meta);
         }
     }
 }
 
 async fn queue_qobuz(tx: &Sender<QueueItem>, track: &Track, id: &str, quality: &str, meta: &Value) {
     if let Ok(res) = fallback_get_song(id, quality).await {
-        if let Some(url) = res.get("data").and_then(|v| v.get("url")).and_then(Value::as_str) {
+        if let Some(url) = res
+            .get("data")
+            .and_then(|v| v.get("url"))
+            .and_then(Value::as_str)
+        {
             send_to_queue(tx, track, id, url, "", "qobuz", meta);
         }
     }
@@ -359,7 +354,7 @@ fn send_to_queue(
     url: &str,
     key: &str,
     source: &str,
-    meta: &Value,
+    _meta: &Value,
 ) {
     let payload = json!({
         "url": url,
@@ -367,7 +362,7 @@ fn send_to_queue(
         "key": key,
         "id": id,
         "source": source,
-        "duration": meta.get("duration").and_then(Value::as_i64).unwrap_or(0)
+        "duration": track.duration
     });
 
     let _ = tx.send(QueueItem::Url(payload));
@@ -411,7 +406,7 @@ pub fn queue_song(mpv: &mut Mpv, url: &Value) {
     mpv.command("loadfile", &[file_url, "replace"]).unwrap();
 }
 
-fn is_streamable(json: &Value) -> bool {
+fn _is_streamable(json: &Value) -> bool {
     json.get("stremeable")
         .and_then(Value::as_bool)
         .unwrap_or(false)
@@ -444,16 +439,9 @@ pub async fn add_song(
             audio_quality = "opus";
         }
         let song;
-        if source == "amazon" {
+        if source == "tidal" {
             song = get_song(id, audio_quality).await.unwrap();
-            if !is_streamable(&song) {
-                return false;
-            }
-            let key = song.get("decryptionKey").and_then(Value::as_str).unwrap();
-            let manifest = song
-                .get("streamInfo")
-                .and_then(|d| d.get("streamUrl"))
-                .and_then(Value::as_str);
+            let manifest = song.get("url").and_then(Value::as_str);
             if let Some(url) = manifest {
                 urls.insert(
                     if cur == 0 && urls.len() == 0 {
@@ -466,7 +454,6 @@ pub async fn add_song(
                         " - ",
                         artist
                     ])), "id": id.to_string(),
-                    "key": key,
                     "source": source
                     ,"duration": track
                         .get("duration").and_then(Value::as_i64).unwrap_or(0)}),
@@ -475,7 +462,11 @@ pub async fn add_song(
         } else {
             song = fallback_get_song(id, audio_quality).await.unwrap();
 
-            if let Some(manifest) = song.get("data").and_then(|v| v.get("url")).and_then(Value::as_str) {
+            if let Some(manifest) = song
+                .get("data")
+                .and_then(|v| v.get("url"))
+                .and_then(Value::as_str)
+            {
                 urls.insert(
                     if cur == 0 && urls.len() == 0 {
                         0

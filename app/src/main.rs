@@ -267,7 +267,9 @@ async fn main() {
                 player_num = 2;
                 match urls[current].get("duration").and_then(Value::as_i64) {
                     Some(e) => dura = e as f64,
-                    None => {}
+                    None => {
+                        dura = mpv2.get_property("duration").unwrap_or(0.0);
+                    }
                 }
                 match mpv2.get_property::<f64>("time-pos") {
                     Ok(e) => tim = e,
@@ -280,7 +282,9 @@ async fn main() {
                 player_num = 1;
                 match urls[current].get("duration").and_then(Value::as_i64) {
                     Some(e) => dura = e as f64,
-                    None => {}
+                    None => {
+                        dura = mpv2.get_property("duration").unwrap_or(0.0);
+                    }
                 }
                 match mpv.get_property::<f64>("time-pos") {
                     Ok(e) => tim = e,
@@ -660,9 +664,12 @@ async fn main() {
                                     continue;
                                 }
                                 let mut fallback_used = false;
+                                while !checked() {
+                                    std::thread::sleep(Duration::from_secs(1));
+                                }
                                 let mut ress;
                                 if infostream() {
-                                    ress = search_result(&app.search_query).await;
+                                    ress = search(&app.search_query).await;
                                     if ress.is_err() {
                                         fallback_used = true;
                                         ress = fallback_search(&app.search_query).await;
@@ -706,35 +713,23 @@ async fn main() {
                                         }
                                     }
                                 } else {
-                                    if let Some(v) = res
-                                        .get("results")
-                                        .and_then(Value::as_array)
-                                        .and_then(|v| v.first())
-                                        .and_then(|v| v.get("hits"))
-                                        .and_then(Value::as_array)
-                                    {
+                                    if let Some(v) = res.get("tracks").and_then(Value::as_array) {
                                         for i in v {
                                             let name = i
-                                                .get("document")
-                                                .and_then(|v| v.get("artistName"))
+                                                .get("artist")
                                                 .and_then(Value::as_str)
                                                 .unwrap_or("Unknown");
                                             let duration = i
-                                                .get("document")
-                                                .and_then(|v| v.get("duration"))
+                                                .get("duration")
                                                 .and_then(Value::as_i64)
                                                 .unwrap_or(0);
-                                            let id = i
-                                                .get("document")
-                                                .and_then(|v| v.get("asin"))
-                                                .and_then(Value::as_str)
-                                                .unwrap_or("");
+                                            let id =
+                                                i.get("id").and_then(Value::as_str).unwrap_or("");
                                             let title = i
-                                                .get("document")
-                                                .and_then(|v| v.get("title"))
+                                                .get("title")
                                                 .and_then(Value::as_str)
                                                 .unwrap_or("Unknown");
-                                            new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "amazon"}));
+                                            new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "tidal"}));
                                         }
                                     }
                                 }
@@ -952,7 +947,7 @@ async fn main() {
                                         .unwrap_or("Unknown");
                                     let query = title.to_string() + " " + artist;
                                     let mut fallback_used = false;
-                                    let mut ress = search_result(&query).await;
+                                    let mut ress = search(&query).await;
                                     if ress.is_err() {
                                         fallback_used = true;
                                         ress = fallback_search(&query).await;

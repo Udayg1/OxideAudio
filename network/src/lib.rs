@@ -4,6 +4,7 @@ use reqwest::Client;
 use reqwest::header::{CONTENT_TYPE, COOKIE, REFERER, USER_AGENT};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicI64};
@@ -14,25 +15,20 @@ use url;
 use uuid;
 
 pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
-pub static INFOSTREAM: AtomicBool = AtomicBool::new(false);
+static INFOSTREAM: AtomicBool = AtomicBool::new(false);
+static CHECKED: AtomicBool = AtomicBool::new(false);
 static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
-pub static API: &str = "https://t2tunes.site/api/amazon-music";
 static LAST_CHALLENGE: AtomicI64 = AtomicI64::new(0);
 pub static FALLBACK: &str = "https://qobuz.squid.wtf";
-static SUGGESTION_SOURCE: &str = "https://spotiflac.eclipsemusic.app/9fce354c40f3cbf0/";
+static SUGGESTION_SOURCE: &str =
+    "https://monochrome1.cyrusna29.workers.dev/u/d3e66ac08b8ceb9c1b698901ea6b";
 
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
 }
-
-use sha2::{Digest, Sha256};
-
-// ----------------------------
-// helpers
-// ----------------------------
 
 fn hex_to_bytes(hex_str: &str) -> Vec<u8> {
     hex::decode(hex_str).expect("Invalid hex string")
@@ -45,10 +41,6 @@ fn buffer_starts_with(buf: &[u8], prefix: &[u8]) -> bool {
 fn buffer_to_hex(buf: &[u8]) -> String {
     hex::encode(buf)
 }
-
-// ----------------------------
-// password buffer
-// ----------------------------
 
 struct PasswordBuffer {
     nonce: Vec<u8>,
@@ -69,10 +61,6 @@ impl PasswordBuffer {
         self.buffer.clone()
     }
 }
-
-// ----------------------------
-// derive_key
-// ----------------------------
 
 fn derive_key(
     algorithm: &str,
@@ -105,10 +93,6 @@ fn derive_key(
     derived
 }
 
-// ----------------------------
-// parameters struct
-// ----------------------------
-
 #[derive(Debug, Deserialize)]
 struct Parameters {
     nonce: String,
@@ -120,10 +104,6 @@ struct Parameters {
     key_length: Option<usize>,
     algorithm: Option<String>,
 }
-
-// ----------------------------
-// solve_challenge
-// ----------------------------
 
 fn solve_challenge(parameters: Parameters) -> Option<serde_json::Value> {
     let counter_start = 0;
@@ -261,6 +241,11 @@ pub fn infostream() -> bool {
     return d.clone();
 }
 
+pub fn checked() -> bool{
+    let d = CHECKED.load(std::sync::atomic::Ordering::Relaxed);
+    return d.clone();
+}
+
 pub async fn fallback_metadata(qobuz_id: &str) -> Value {
     let cli = CLIENT.get().unwrap().clone();
     let url = concat_strings(Vec::from([
@@ -315,66 +300,66 @@ pub async fn fallback_metadata(qobuz_id: &str) -> Value {
     jsn
 }
 
-pub async fn metadata(id: &str) -> Value {
-    let cli = CLIENT.get().unwrap().clone();
-    let url = concat_strings(Vec::from([API, "/metadata?asin=", id]));
-    let mut resp = None;
-    let res = cli
-        .get(url)
-        .header(USER_AGENT, AGENT)
-        .timeout(Duration::from_secs(7))
-        .send()
-        .await;
-    let response = match res {
-        Ok(e) => e.error_for_status(),
-        Err(_) => {
-            return empty_json();
-        }
-    };
-    if !response.is_err() {
-        resp = Some(response.unwrap().json::<Value>().await.expect("JSON ERROR"));
-    }
-    if resp.is_none() {
-        return empty_json();
-    }
-    let res = resp.expect("Status error");
-    let mut qual = None;
-    if let Some(qual_arr) = res
-        .get("trackList")
-        .and_then(Value::as_array)
-        .and_then(|v| v.first())
-        .and_then(|v| v.get("assetQualities"))
-        .and_then(Value::as_array)
-    {
-        for i in qual_arr {
-            if i.get("quality").and_then(Value::as_str) == Some("CD") {
-                qual = Some("flac");
-                break;
-            } else {
-                qual = Some("opus");
-            }
-        }
-    }
-    let mut duration = None;
-    if let Some(dur) = res
-        .get("trackList")
-        .and_then(Value::as_array)
-        .and_then(|v| v.first())
-        .and_then(|v| v.get("duration"))
-        .and_then(Value::as_i64)
-    {
-        duration = Some(dur);
-    }
-    let pref = PREF_QUAL.get().unwrap();
-    if !qual.is_none() {
-        if qual == Some("flac") && pref == "HIGH" {
-            return json!({"quality":"opus", "duration": duration.unwrap_or(0)});
-        }
-        json!({"quality":qual.unwrap_or("opus"), "duration": duration.unwrap_or(0)})
-    } else {
-        json!({"quality": "opus"})
-    }
-}
+// pub async fn metadata(id: &str) -> Value {
+//     let cli = CLIENT.get().unwrap().clone();
+//     let url = concat_strings(Vec::from([API, "/metadata?asin=", id]));
+//     let mut resp = None;
+//     let res = cli
+//         .get(url)
+//         .header(USER_AGENT, AGENT)
+//         .timeout(Duration::from_secs(7))
+//         .send()
+//         .await;
+//     let response = match res {
+//         Ok(e) => e.error_for_status(),
+//         Err(_) => {
+//             return empty_json();
+//         }
+//     };
+//     if !response.is_err() {
+//         resp = Some(response.unwrap().json::<Value>().await.expect("JSON ERROR"));
+//     }
+//     if resp.is_none() {
+//         return empty_json();
+//     }
+//     let res = resp.expect("Status error");
+//     let mut qual = None;
+//     if let Some(qual_arr) = res
+//         .get("trackList")
+//         .and_then(Value::as_array)
+//         .and_then(|v| v.first())
+//         .and_then(|v| v.get("assetQualities"))
+//         .and_then(Value::as_array)
+//     {
+//         for i in qual_arr {
+//             if i.get("quality").and_then(Value::as_str) == Some("CD") {
+//                 qual = Some("flac");
+//                 break;
+//             } else {
+//                 qual = Some("opus");
+//             }
+//         }
+//     }
+//     let mut duration = None;
+//     if let Some(dur) = res
+//         .get("trackList")
+//         .and_then(Value::as_array)
+//         .and_then(|v| v.first())
+//         .and_then(|v| v.get("duration"))
+//         .and_then(Value::as_i64)
+//     {
+//         duration = Some(dur);
+//     }
+//     let pref = PREF_QUAL.get().unwrap();
+//     if !qual.is_none() {
+//         if qual == Some("flac") && pref == "HIGH" {
+//             return json!({"quality":"opus", "duration": duration.unwrap_or(0)});
+//         }
+//         json!({"quality":qual.unwrap_or("opus"), "duration": duration.unwrap_or(0)})
+//     } else {
+//         json!({"quality": "opus"})
+//     }
+// }
 
 pub fn cache_next_song(url: String, index: usize, sx: Sender<CacheItem>) {
     tokio::spawn(async move {
@@ -459,45 +444,36 @@ pub fn set_url() {
                     last_update = Instant::now();
                 }
             }
-            let res = cli
-                .get("https://t2tunes.site/api/status")
+            if let Ok(res) = cli
+                .get(format!("{SUGGESTION_SOURCE}/stream/305501371"))
                 .send()
                 .await
-                .unwrap();
-            let jsn = res.json::<Value>().await.unwrap();
-            if jsn.get("amazonMusic").and_then(Value::as_str) == Some("up") {
-                INFOSTREAM.store(true, std::sync::atomic::Ordering::Relaxed);
-            } else {
-                INFOSTREAM.store(false, std::sync::atomic::Ordering::Relaxed);
+            {
+                if let Ok(_) = res.error_for_status() {
+                    INFOSTREAM.store(true, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    INFOSTREAM.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                CHECKED.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             tokio::time::sleep(Duration::from_mins(1)).await;
         }
     });
 }
 
-pub async fn get_song(id: &str, audio_quality: &str) -> Result<Value, reqwest::Error> {
-    let fin_url = concat_strings(Vec::from([
-        API,
-        "/media-from-asin?asin=",
-        id,
-        "&codec=",
-        audio_quality,
-    ]));
+pub async fn get_song(id: &str, _: &str) -> Result<Value, reqwest::Error> {
+    let fin_url = concat_strings(Vec::from([SUGGESTION_SOURCE, "/stream/", id]));
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
     if let Ok(b) = client
         .get(&fin_url)
         .header(USER_AGENT, AGENT)
-        .header(REFERER, API)
+        .header(REFERER, SUGGESTION_SOURCE)
         .send()
         .await
     {
         if let Ok(jsn) = b.error_for_status()?.json::<Value>().await {
-            if let Some(element) = jsn.as_array() {
-                if let Some(first) = element.first() {
-                    body = Some(first.clone())
-                }
-            }
+            body = Some(jsn.clone())
         }
     }
 
@@ -551,29 +527,16 @@ pub async fn fallback_get_song(
     }
 }
 
-pub async fn search_result(query: &str) -> Result<Value, reqwest::Error> {
-    // let s = query
-    //     .split(' ')
-    //     .collect::<Vec<&str>>()
-    //     .join("+")
-    //     .to_string();
-    // let q = concat_strings(Vec::from([
-    //     API,
-    //     "/search?query=",
-    //     s.as_str(),
-    //     "&types=track",
-    // ]));
-    let mut q = url::Url::parse(API).unwrap();
+pub async fn search(query: &str) -> Result<Value, reqwest::Error> {
+    let mut q = url::Url::parse(SUGGESTION_SOURCE).unwrap();
     q.path_segments_mut().unwrap().push("search");
-    q.query_pairs_mut()
-        .append_pair("query", query)
-        .append_pair("types", "track");
+    q.query_pairs_mut().append_pair("q", query);
     let client = CLIENT.get().unwrap().clone();
     let mut body = None;
     if let Ok(b) = client
         .get(q)
         .header(USER_AGENT, AGENT)
-        .header(REFERER, API)
+        .header(REFERER, SUGGESTION_SOURCE)
         .send()
         .await
     {
@@ -841,7 +804,22 @@ pub fn get_ytrec_array(recs: Value) -> Option<Vec<Value>> {
             .and_then(Value::as_array)
             .and_then(|v| v.get(0))
             .and_then(|v| v.get("text"));
-        let jso = json!({"id": id, "name": name, "artist": artist});
+        let duration = i
+            .get("playlistPanelVideoRenderer")
+            .and_then(|v| v.get("lengthText"))
+            .and_then(|v| v.get("runs"))
+            .and_then(Value::as_array)
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("text"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let time = duration
+            .split(':')
+            .rev()
+            .enumerate()
+            .map(|(j, value)| value.parse::<u64>().unwrap_or(0) * 60u64.pow(j as u32))
+            .sum::<u64>();
+        let jso = json!({"id": id, "name": name, "artist": artist, "duration": time});
         arr.push(jso);
     }
     Some(arr)
