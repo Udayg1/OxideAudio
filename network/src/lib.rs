@@ -22,8 +22,7 @@ pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
 static LAST_CHALLENGE: AtomicI64 = AtomicI64::new(0);
 pub static FALLBACK: &str = "https://qobuz.squid.wtf";
-static SUGGESTION_SOURCE: &str =
-    "https://monochrome1.cyrusna29.workers.dev/u/d3e66ac08b8ceb9c1b698901ea6b";
+static SUGGESTION_SOURCE: &str = "https://spotiflac.eclipsemusic.app/c30db2d39f17902c";
 
 pub struct CacheItem {
     pub path: String,
@@ -241,7 +240,7 @@ pub fn infostream() -> bool {
     return d.clone();
 }
 
-pub fn checked() -> bool{
+pub fn checked() -> bool {
     let d = CHECKED.load(std::sync::atomic::Ordering::Relaxed);
     return d.clone();
 }
@@ -454,8 +453,10 @@ pub fn set_url() {
                 } else {
                     INFOSTREAM.store(false, std::sync::atomic::Ordering::Relaxed);
                 }
-                CHECKED.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                INFOSTREAM.store(false, std::sync::atomic::Ordering::Relaxed);
             }
+            CHECKED.store(true, std::sync::atomic::Ordering::Relaxed);
             tokio::time::sleep(Duration::from_mins(1)).await;
         }
     });
