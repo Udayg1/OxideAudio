@@ -15,7 +15,7 @@ use url;
 use uuid;
 
 pub static PREF_QUAL: OnceLock<String> = OnceLock::new();
-static INFOSTREAM: AtomicBool = AtomicBool::new(false);
+static INFOSTREAM: AtomicBool = AtomicBool::new(true);
 static CHECKED: AtomicBool = AtomicBool::new(false);
 static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
@@ -168,16 +168,18 @@ async fn fetch_challenge() -> Result<String, reqwest::Error> {
     let epoch_time = get_time();
     let client = CLIENT.get().unwrap().clone();
     let url = format!("{FALLBACK}/api/altcha/challenge?ts={epoch_time}");
+    let output = String::new();
     let res = client
         .get(url)
         .header(USER_AGENT, AGENT)
         .header(REFERER, FALLBACK)
         .send()
-        .await?
-        .error_for_status()?
-        .text()
         .await?;
-    Ok(res)
+    if res.status().is_server_error() {
+        return Ok(output);
+    } else {
+        Ok(res.text().await?)
+    }
 }
 
 fn make_payload(final_json: &str) -> String {
@@ -200,20 +202,12 @@ async fn post_payload(json: String) -> Result<(), reqwest::Error> {
     Ok(())
 }
 
-async fn update_challenge() -> bool {
-    let mut challenge_json = None;
-    while challenge_json.is_none() {
-        let mut challenge = fetch_challenge().await;
-        while challenge.is_err() {
-            challenge = fetch_challenge().await;
-        }
-        let challenge_string = challenge.unwrap();
-        let chall_json = serde_json::from_str::<Value>(&challenge_string);
-        if chall_json.is_err() {
-            continue;
-        }
-        challenge_json = Some(chall_json.unwrap());
+async fn update_challenge(challenge: &str) -> bool {
+    let chall_json = serde_json::from_str::<Value>(challenge);
+    if chall_json.is_err() {
+        return false;
     }
+    let challenge_json = Some(chall_json.unwrap());
     let final_challenge = challenge_json.unwrap();
     if let Some(params) = final_challenge.get("parameters") {
         let solved = solve_challenge(serde_json::from_value::<Parameters>(params.clone()).unwrap());
@@ -431,20 +425,30 @@ pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
         CLIENT.set(cli.clone()).unwrap();
+        let challenge = fetch_challenge().await;
         let mut last_update = Instant::now();
-        let mut res = update_challenge().await;
-        while !res {
-            res = update_challenge().await;
+        if !challenge.is_err() {
+            let challenge = challenge.unwrap();
+            if !challenge.is_empty() {
+                let _ = update_challenge(&challenge).await;
+            }
         }
         loop {
             if last_update.elapsed() >= Duration::from_mins(15) {
-                let res = update_challenge().await;
-                if res {
-                    last_update = Instant::now();
+                let challenge = fetch_challenge().await;
+                if !challenge.is_err() {
+                    let challenge = challenge.unwrap();
+                    if !challenge.is_empty() {
+                        let res = update_challenge(&challenge).await;
+                        if res {
+                            last_update = Instant::now();
+                        }
+                    }
                 }
             }
             if let Ok(res) = cli
-                .get(format!("{SUGGESTION_SOURCE}/stream/305501371"))
+                .get(format!("{SUGGESTION_SOURCE}/stream/221144944"))
+                .timeout(Duration::from_secs(10))
                 .send()
                 .await
             {
@@ -456,7 +460,7 @@ pub fn set_url() {
             } else {
                 INFOSTREAM.store(false, std::sync::atomic::Ordering::Relaxed);
             }
-            CHECKED.store(true, std::sync::atomic::Ordering::Relaxed);
+            CHECKED.store(true, std::sync::atomic::Ordering::Release);
             tokio::time::sleep(Duration::from_mins(1)).await;
         }
     });

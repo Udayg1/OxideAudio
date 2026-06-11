@@ -687,51 +687,11 @@ async fn main() {
                                     continue;
                                 }
                                 let res = ress.unwrap();
-                                let mut new_jsn = Vec::new();
+                                let new_jsn;
                                 if fallback_used {
-                                    if let Some(v) = res.get("items").and_then(Value::as_array) {
-                                        for i in v {
-                                            let name = i
-                                                .get("performer")
-                                                .and_then(|v| v.get("name"))
-                                                .and_then(Value::as_str)
-                                                .unwrap_or("Unknown");
-                                            let duration = i
-                                                .get("duration")
-                                                .and_then(Value::as_i64)
-                                                .unwrap_or(0);
-                                            let id = i
-                                                .get("id")
-                                                .and_then(Value::as_i64)
-                                                .unwrap_or(0)
-                                                .to_string();
-                                            let title = i
-                                                .get("title")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or("Unknown");
-                                            new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
-                                        }
-                                    }
+                                    new_jsn = parse_fallback(res).unwrap_or(Vec::new());
                                 } else {
-                                    if let Some(v) = res.get("tracks").and_then(Value::as_array) {
-                                        for i in v {
-                                            let name = i
-                                                .get("artist")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or("Unknown");
-                                            let duration = i
-                                                .get("duration")
-                                                .and_then(Value::as_i64)
-                                                .unwrap_or(0);
-                                            let id =
-                                                i.get("id").and_then(Value::as_str).unwrap_or("");
-                                            let title = i
-                                                .get("title")
-                                                .and_then(Value::as_str)
-                                                .unwrap_or("Unknown");
-                                            new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "tidal"}));
-                                        }
-                                    }
+                                    new_jsn = parse_primary(res).unwrap_or(Vec::new());
                                 }
                                 app.search_results = new_jsn;
                                 if app.search_results.is_empty() {
@@ -747,28 +707,15 @@ async fn main() {
                                         let res = results.unwrap();
                                         app.mode = UiMode::Suggestions;
                                         app.search_results.clear();
-                                        if let Some(a) = res.get("tracks").and_then(Value::as_array)
-                                        {
-                                            for i in a {
-                                                let name = i
-                                                    .get("artist")
-                                                    .and_then(Value::as_str)
-                                                    .unwrap_or("Unknown");
-                                                let title = i
-                                                    .get("title")
-                                                    .and_then(Value::as_str)
-                                                    .unwrap_or("Unknown");
-                                                let id = i
-                                                    .get("id")
-                                                    .and_then(Value::as_str)
-                                                    .unwrap_or("");
-                                                let duration = i
-                                                    .get("duration")
-                                                    .and_then(Value::as_i64)
-                                                    .unwrap_or(0);
-                                                app.search_results.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
-                                            }
+                                        let suggestions = parse_primary(res).unwrap_or(Vec::new());
+                                        if suggestions.is_empty() {
+                                            send_msg(
+                                                &mut app,
+                                                "Search yield no results",
+                                                &mut last_msg,
+                                            );
                                         }
+                                        app.search_results = suggestions
                                     }
                                 } else {
                                     app.selected = 0;

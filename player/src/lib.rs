@@ -500,3 +500,33 @@ pub async fn add_song(
     }
     false
 }
+
+pub fn parse_primary(api_response: Value) -> Option<Vec<Value>> {
+    let tracks_array = api_response.get("tracks").and_then(Value::as_array)?;
+    let mut return_result = Vec::new();
+    for i in tracks_array {
+        let name = i.get("artist").and_then(Value::as_str).unwrap_or("Unknown");
+        let duration = i.get("duration").and_then(Value::as_i64).unwrap_or(0);
+        let id = i.get("id").and_then(Value::as_str).unwrap_or("");
+        let title = i.get("title").and_then(Value::as_str).unwrap_or("Unknown");
+        return_result.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "tidal"}));
+    }
+    Some(return_result)
+}
+
+pub fn parse_fallback(api_response: Value) -> Option<Vec<Value>> {
+    let tracks_array = api_response.get("items").and_then(Value::as_array)?;
+    let mut return_result = Vec::new();
+    for i in tracks_array {
+        let name = i
+            .get("performer")
+            .and_then(|v| v.get("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("Unknown");
+        let duration = i.get("duration").and_then(Value::as_i64).unwrap_or(0);
+        let id = i.get("id").and_then(Value::as_i64).unwrap_or(0).to_string();
+        let title = i.get("title").and_then(Value::as_str).unwrap_or("Unknown");
+        return_result.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "tidal"}));
+    }
+    Some(return_result)
+}
