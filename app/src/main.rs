@@ -61,9 +61,7 @@ fn rewind_playback(mpv: &mut Mpv, urls: &[Value], current: &mut usize, app: &mut
     if *current == 0 {
         match mpv.command("seek", &["0", "absolute-percent"]) {
             Ok(_) => {}
-            Err(e) => {
-                eprintln!("{e}");
-            }
+            Err(_) => {}
         }
         app.dur = urls[*current]
             .get("duration")
@@ -192,6 +190,10 @@ async fn main() {
         "protocol_whitelist=[file,https,http,tls,tcp,crypto,data]",
     )
     .unwrap();
+    mpv.set_property("http-header-fields", "Referer: https://lossless.wtf")
+        .unwrap();
+    mpv2.set_property("http-header-fields", "Referer: https://lossless.wtf")
+        .unwrap();
     // mpv.set_property("msg-level", "all=debug").unwrap();
     // mpv.set_property("log-file", "./mpv.log").unwrap();
     // mpv2.set_property("log-file", "./mpv2.log").unwrap();
@@ -689,7 +691,7 @@ async fn main() {
                                 let res = ress.unwrap();
                                 let new_jsn;
                                 if fallback_used {
-                                    new_jsn = parse_fallback(res).unwrap_or(Vec::new());
+                                    new_jsn = parse_fallback(res).await.unwrap_or(Vec::new());
                                 } else {
                                     new_jsn = parse_primary(res).unwrap_or(Vec::new());
                                 }
@@ -762,7 +764,7 @@ async fn main() {
                                     .get("source")
                                     .and_then(Value::as_str)
                                 {
-                                    if e != "qobuz" {
+                                    if e != "deezer" {
                                         let data = fallback_search(&app.search_query).await;
                                         if data.is_err() {
                                             send_msg(&mut app, "No results", &mut last_msg);
@@ -770,34 +772,8 @@ async fn main() {
                                             app.dirty = true;
                                         } else {
                                             let res = data.unwrap();
-                                            let mut new_jsn = Vec::new();
-
-                                            if let Some(v) =
-                                                res.get("items").and_then(Value::as_array)
-                                            {
-                                                for i in v {
-                                                    let name = i
-                                                        .get("performer")
-                                                        .and_then(|v| v.get("name"))
-                                                        .and_then(Value::as_str)
-                                                        .unwrap_or("Unknown");
-                                                    let duration = i
-                                                        .get("duration")
-                                                        .and_then(Value::as_i64)
-                                                        .unwrap_or(0);
-                                                    let id = i
-                                                        .get("id")
-                                                        .and_then(Value::as_i64)
-                                                        .unwrap_or(0)
-                                                        .to_string();
-                                                    let title = i
-                                                        .get("title")
-                                                        .and_then(Value::as_str)
-                                                        .unwrap_or("Unknown");
-                                                    new_jsn.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "qobuz"}));
-                                                }
-                                            }
-
+                                            let new_jsn =
+                                                parse_fallback(res).await.unwrap_or(Vec::new());
                                             app.search_results = new_jsn;
                                         }
                                     }

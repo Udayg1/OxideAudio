@@ -220,8 +220,9 @@ struct ResolvedTrack {
 #[derive(Debug)]
 enum Source {
     _Amazon,
+    Deezer,
     Tidal,
-    Qobuz,
+    _Qobuz,
 }
 
 fn extract_id(json: &Value) -> Option<String> {
@@ -281,18 +282,18 @@ async fn resolve_track_id(track: &Track) -> Option<ResolvedTrack> {
             });
         }
     }
-    if let Some(id) = get_cached_id(&track.yt_id, "qobuz") {
+    if let Some(id) = get_cached_id(&track.yt_id, "isrc") {
         return Some(ResolvedTrack {
             id,
-            source: Source::Qobuz,
+            source: Source::Deezer,
         });
     }
     if let Ok(songs) = fallback_search(&query).await {
         if let Some(id) = extract_qobuz_id(&songs) {
-            cache_id(&track.yt_id, "qobuz", &id);
+            cache_id(&track.yt_id, "isrc", &id);
             return Some(ResolvedTrack {
                 id,
-                source: Source::Qobuz,
+                source: Source::Deezer,
             });
         }
     }
@@ -306,7 +307,7 @@ async fn fetch_and_queue(tx: &Sender<QueueItem>, track: &Track, resolved: Resolv
 
     let quality_json = match resolved.source {
         Source::Tidal => json!({"quality": "flac"}),
-        Source::Qobuz => fallback_metadata(&resolved.id).await,
+        Source::Deezer => json!({"quality": "flac"}),
         _ => return,
     };
 
@@ -317,7 +318,7 @@ async fn fetch_and_queue(tx: &Sender<QueueItem>, track: &Track, resolved: Resolv
 
     match resolved.source {
         Source::Tidal => queue_tidal(tx, track, &resolved.id, quality, &quality_json).await,
-        Source::Qobuz => queue_qobuz(tx, track, &resolved.id, quality, &quality_json).await,
+        Source::Deezer => queue_deezer(tx, track, &resolved.id, quality, &quality_json).await,
         _ => return,
     }
 }
@@ -335,7 +336,13 @@ async fn queue_tidal(tx: &Sender<QueueItem>, track: &Track, id: &str, quality: &
     }
 }
 
-async fn queue_qobuz(tx: &Sender<QueueItem>, track: &Track, id: &str, quality: &str, meta: &Value) {
+async fn queue_deezer(
+    tx: &Sender<QueueItem>,
+    track: &Track,
+    id: &str,
+    quality: &str,
+    meta: &Value,
+) {
     if let Ok(res) = fallback_get_song(id, quality).await {
         if let Some(url) = res
             .get("data")
@@ -514,19 +521,110 @@ pub fn parse_primary(api_response: Value) -> Option<Vec<Value>> {
     Some(return_result)
 }
 
-pub fn parse_fallback(api_response: Value) -> Option<Vec<Value>> {
-    let tracks_array = api_response.get("items").and_then(Value::as_array)?;
+pub async fn parse_fallback(api_response: Value) -> Option<Vec<Value>> {
+    let tracks_array = api_response.get("included").and_then(Value::as_array)?;
     let mut return_result = Vec::new();
+    let mut artists = empty_json();
+    let mut tracks = Vec::new();
     for i in tracks_array {
-        let name = i
-            .get("performer")
-            .and_then(|v| v.get("name"))
+        if i.get("type").and_then(Value::as_str) == Some("artists") {
+            let name = i
+                .get("attributes")
+                .and_then(|v| v.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let id = i.get("id").and_then(Value::as_str).unwrap_or("");
+            if !id.is_empty() {
+                artists[id] = json!(name);
+            }
+        } else if i.get("type").and_then(Value::as_str) == Some("tracks") {
+            tracks.push(i.clone());
+        }
+    }
+    for i in &tracks {
+        let title = i
+            .get("attributes")
+            .and_then(|v| v.get("title"))
             .and_then(Value::as_str)
             .unwrap_or("Unknown");
-        let duration = i.get("duration").and_then(Value::as_i64).unwrap_or(0);
-        let id = i.get("id").and_then(Value::as_i64).unwrap_or(0).to_string();
-        let title = i.get("title").and_then(Value::as_str).unwrap_or("Unknown");
-        return_result.push(json!({"artist": name, "duration": duration, "id": id, "title": title, "source": "tidal"}));
+        let id = i
+            .get("attributes")
+            .and_then(|v| v.get("isrc"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if id.is_empty() {
+            continue;
+        }
+        let duration_str = i
+            .get("attributes")
+            .and_then(|v| v.get("duration"))
+            .and_then(Value::as_str)
+            .unwrap_or("PT0S");
+        let duration = iso_duration_to_seconds(duration_str);
+        let artists_array: Vec<Value> = i
+            .get("relationships")
+            .and_then(|v| v.get("artists"))
+            .and_then(|v| v.get("data"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or(Vec::new());
+        let mut artist_array = Vec::new();
+        for j in artists_array {
+            if j.get("type").and_then(Value::as_str) == Some("artists") {
+                let id = j.get("id").and_then(Value::as_str).unwrap_or("");
+                if id.is_empty() {
+                    continue;
+                }
+                let mut artist_name = artists
+                    .get(id)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if artist_name.is_empty() {
+                    let artist_json_res = get_artist_from_tidal_id(id).await;
+                    if artist_json_res.is_err() {
+                        artist_name = "Unknown".to_string();
+                    } else {
+                        let artist_json = artist_json_res.unwrap();
+                        eprintln!("{artist_json}");
+                        artist_name = artist_json
+                            .get("data")
+                            .and_then(|v| v.get("attributes"))
+                            .and_then(|v| v.get("name"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("Unknown")
+                            .to_string();
+                    }
+                }
+                artist_array.push(artist_name);
+            }
+        }
+        let artist = artist_array.join(" & ");
+        return_result
+            .push(json!({"artist": artist, "title": title, "id": id, "duration": duration, "source": "deezer"}))
     }
     Some(return_result)
+}
+
+fn iso_duration_to_seconds<T: AsRef<str>>(input: T) -> u64 {
+    use regex::Regex;
+    let input = input.as_ref();
+
+    let re = Regex::new(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?").unwrap();
+
+    let caps = re.captures(input).unwrap();
+
+    let hours = caps
+        .get(1)
+        .map_or(0, |m| m.as_str().parse::<u64>().unwrap());
+
+    let minutes = caps
+        .get(2)
+        .map_or(0, |m| m.as_str().parse::<u64>().unwrap());
+
+    let seconds = caps
+        .get(3)
+        .map_or(0, |m| m.as_str().parse::<u64>().unwrap());
+
+    hours * 3600 + minutes * 60 + seconds
 }

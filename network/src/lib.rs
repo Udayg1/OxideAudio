@@ -1,15 +1,15 @@
 use base64::{Engine as _, engine::general_purpose};
 use macros::*;
+use regex::Regex;
 use reqwest::Client;
-use reqwest::header::{CONTENT_TYPE, COOKIE, REFERER, USER_AGENT};
-use serde::Deserialize;
+use reqwest::header::{CONTENT_TYPE, REFERER, USER_AGENT};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicI64};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use std::{env, fs};
 use url;
 use uuid;
@@ -20,213 +20,105 @@ static CHECKED: AtomicBool = AtomicBool::new(false);
 static CLIENT: OnceLock<Client> = OnceLock::new();
 pub static IS_CACHING: AtomicBool = AtomicBool::new(false);
 pub const AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:149.0) Gecko/20100101 Firefox/149.0";
-static LAST_CHALLENGE: AtomicI64 = AtomicI64::new(0);
-pub static FALLBACK: &str = "https://qobuz.squid.wtf";
+pub static FALLBACK_STREAM: &str = "https://dzr.tabs-vs-spaces.wtf";
+pub static FALLBACK: &str = "https://tidal-proxy.monochrome.tf/openapi/v2";
 static SUGGESTION_SOURCE: &str = "https://spotiflac.eclipsemusic.app/c30db2d39f17902c";
+static TOKEN: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
 
 pub struct CacheItem {
     pub path: String,
     pub index: usize,
 }
 
-fn hex_to_bytes(hex_str: &str) -> Vec<u8> {
-    hex::decode(hex_str).expect("Invalid hex string")
+struct JsData {
+    client_id: String,
+    client_secret: String,
 }
 
-fn buffer_starts_with(buf: &[u8], prefix: &[u8]) -> bool {
-    buf.starts_with(prefix)
+fn token() -> String {
+    TOKEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-fn buffer_to_hex(buf: &[u8]) -> String {
-    hex::encode(buf)
+fn set_token(token: String) {
+    let mut s = TOKEN.lock().unwrap();
+    *s = token;
 }
 
-struct PasswordBuffer {
-    nonce: Vec<u8>,
-    buffer: Vec<u8>,
+async fn get_js_name() -> Result<String, reqwest::Error> {
+    let url = "https://lossless.wtf";
+    let client = CLIENT.get().unwrap_or(&Client::new()).clone();
+    let res = client.get(url).send().await?.text().await?;
+    let re = Regex::new(r#"src=["'][^"']*/([^/"']+\.js)["']"#).unwrap();
+
+    Ok(re
+        .captures(&res)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_string())
+        .unwrap_or(String::new()))
 }
 
-impl PasswordBuffer {
-    fn new(nonce: Vec<u8>) -> Self {
-        let mut buffer = vec![0u8; nonce.len() + 4];
-        buffer[..nonce.len()].copy_from_slice(&nonce);
-
-        Self { nonce, buffer }
-    }
-
-    fn set_counter(&mut self, counter: u32) -> Vec<u8> {
-        let start = self.nonce.len();
-        self.buffer[start..].copy_from_slice(&counter.to_be_bytes());
-        self.buffer.clone()
-    }
-}
-
-fn derive_key(
-    algorithm: &str,
-    salt: &[u8],
-    password: &[u8],
-    cost: u32,
-    key_length: usize,
-) -> Vec<u8> {
-    let mut derived: Vec<u8> = Vec::new();
-
-    for i in 0..std::cmp::max(1, cost) {
-        let data = if i == 0 {
-            [salt, password].concat()
-        } else {
-            derived.clone()
-        };
-
-        let hash = match algorithm.to_lowercase().as_str() {
-            "sha-256" | "sha256" => {
-                let mut hasher = Sha256::new();
-                hasher.update(&data);
-                hasher.finalize().to_vec()
-            }
-            _ => panic!("Only SHA-256 supported"),
-        };
-
-        derived = hash[..key_length].to_vec();
-    }
-
-    derived
-}
-
-#[derive(Debug, Deserialize)]
-struct Parameters {
-    nonce: String,
-    salt: String,
-    #[serde(rename = "keyPrefix")]
-    key_prefix: String,
-    cost: u32,
-    #[serde(rename = "keyLength")]
-    key_length: Option<usize>,
-    algorithm: Option<String>,
-}
-
-fn solve_challenge(parameters: Parameters) -> Option<serde_json::Value> {
-    let counter_start = 0;
-    let counter_step = 1;
-    let timeout_secs = 10;
-    let nonce = hex_to_bytes(&parameters.nonce);
-    let salt = hex_to_bytes(&parameters.salt);
-    let key_prefix = parameters.key_prefix;
-    let cost = parameters.cost;
-    let key_length = parameters.key_length.unwrap_or(32);
-    let algorithm = parameters
-        .algorithm
-        .unwrap_or_else(|| "SHA-256".to_string());
-
-    let key_prefix_bytes = if key_prefix.len() % 2 == 0 {
-        Some(hex_to_bytes(&key_prefix))
-    } else {
-        None
-    };
-
-    let mut password = PasswordBuffer::new(nonce);
-
-    let start = Instant::now();
-    let mut counter = counter_start;
-
-    loop {
-        if start.elapsed() > Duration::from_secs(timeout_secs) {
-            return None;
-        }
-
-        let pwd = password.set_counter(counter);
-
-        let derived = derive_key(&algorithm, &salt, &pwd, cost, key_length);
-
-        let ok = if let Some(prefix_bytes) = &key_prefix_bytes {
-            buffer_starts_with(&derived, prefix_bytes)
-        } else {
-            buffer_to_hex(&derived).starts_with(&key_prefix)
-        };
-
-        if ok {
-            return Some(json!({
-                "counter": counter,
-                "derivedKey": buffer_to_hex(&derived),
-                "time": start.elapsed().as_secs_f64() * 1000.0
-            }));
-        }
-
-        counter = counter.wrapping_add(counter_step);
-    }
-}
-
-fn get_time() -> i64 {
-    let mil_time = std::time::SystemTime::now();
-    (mil_time
-        .duration_since(UNIX_EPOCH)
-        .expect("fkin time????")
-        .as_secs_f64()
-        * 1000.0) as i64
-}
-
-async fn fetch_challenge() -> Result<String, reqwest::Error> {
-    let epoch_time = get_time();
-    let client = CLIENT.get().unwrap().clone();
-    let url = format!("{FALLBACK}/api/altcha/challenge?ts={epoch_time}");
-    let output = String::new();
+async fn get_js_file() -> Result<String, reqwest::Error> {
+    let js = get_js_name().await?;
+    let url = format!("https://lossless.wtf/assets/{}", js);
+    let client = CLIENT.get().unwrap_or(&Client::new()).clone();
     let res = client
         .get(url)
-        .header(USER_AGENT, AGENT)
-        .header(REFERER, FALLBACK)
-        .send()
-        .await?;
-    if res.status().is_server_error() {
-        return Ok(output);
-    } else {
-        Ok(res.text().await?)
-    }
-}
-
-fn make_payload(final_json: &str) -> String {
-    let encoded = general_purpose::STANDARD.encode(final_json);
-    format!("{{\"payload\" : \"{encoded}\"}}")
-}
-
-async fn post_payload(json: String) -> Result<(), reqwest::Error> {
-    let client = CLIENT.get().unwrap().clone();
-    let url = format!("{FALLBACK}/api/altcha/verify");
-    let _ = client
-        .post(url)
-        .header(REFERER, FALLBACK)
-        .header(USER_AGENT, AGENT)
-        .header(CONTENT_TYPE, "application/json")
-        .body(json)
+        .timeout(Duration::from_secs(6))
         .send()
         .await?
-        .error_for_status()?;
-    Ok(())
+        .text()
+        .await?;
+    Ok(res)
 }
 
-async fn update_challenge(challenge: &str) -> bool {
-    let chall_json = serde_json::from_str::<Value>(challenge);
-    if chall_json.is_err() {
-        return false;
+fn extract_data_from_js<T: AsRef<str>>(js_string: T) -> Option<JsData> {
+    let client_id_regex = Regex::new(r#"BROWSER_CLIENT_ID\s*=\s*['"]([^'"]+)['"]"#).unwrap();
+    let client_secret_regex =
+        Regex::new(r#"BROWSER_CLIENT_SECRET\s*=\s*['"]([^'"]+)['"]"#).unwrap();
+    let client_id = client_id_regex
+        .captures(js_string.as_ref())
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str());
+    let client_secret = client_secret_regex
+        .captures(js_string.as_ref())
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str());
+    if client_id.is_none() || client_secret.is_none() {
+        return None;
     }
-    let challenge_json = Some(chall_json.unwrap());
-    let final_challenge = challenge_json.unwrap();
-    if let Some(params) = final_challenge.get("parameters") {
-        let solved = solve_challenge(serde_json::from_value::<Parameters>(params.clone()).unwrap());
-        if solved.is_none() {
-            return false;
-        } else {
-            let payload_json =
-                json!({"challenge": final_challenge, "solution":solved.unwrap()}).to_string();
-            let payload_string = make_payload(&payload_json);
-            let t = get_time();
-            if post_payload(payload_string).await.is_err() {
-                return false;
-            }
-            LAST_CHALLENGE.store(t, std::sync::atomic::Ordering::Relaxed);
-            return true;
-        }
-    } else {
-        false
-    }
+    return Some(JsData {
+        client_id: client_id.unwrap().to_string(),
+        client_secret: client_secret.unwrap().to_string(),
+    });
+}
+
+async fn get_token(js_data: &JsData) -> Result<String, reqwest::Error> {
+    let url = "https://auth.tidal.com/v1/oauth2/token";
+    let client = CLIENT.get().unwrap_or(&Client::new()).clone();
+    let base64_encoded_data =
+        make_base64(format!("{}:{}", js_data.client_id, js_data.client_secret));
+    let request = client
+        .post(url)
+        .header("Authorization", format!("Basic {}", base64_encoded_data))
+        .form(&[
+            ("client_id", js_data.client_id.clone()),
+            ("client_secret", js_data.client_secret.clone()),
+            ("grant_type", "client_credentials".to_string()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    Ok(request
+        .get("access_token")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string())
+}
+
+fn make_base64<T: AsRef<str>>(data: T) -> String {
+    general_purpose::STANDARD.encode(data.as_ref())
 }
 
 pub fn infostream() -> bool {
@@ -425,26 +317,25 @@ pub fn set_url() {
     tokio::spawn(async {
         let cli = reqwest::Client::new();
         CLIENT.set(cli.clone()).unwrap();
-        let challenge = fetch_challenge().await;
-        let mut last_update = Instant::now();
-        if !challenge.is_err() {
-            let challenge = challenge.unwrap();
-            if !challenge.is_empty() {
-                let _ = update_challenge(&challenge).await;
-            }
+        let js = get_js_file().await.unwrap_or(String::new());
+        let mut js_data_op = extract_data_from_js(&js);
+        // if js_data_op.is_none() {
+        //     eprintln!("{js}");
+        //     panic!("fked");
+        // }
+        while js_data_op.is_none() {
+            let js = get_js_file().await.unwrap_or(String::new());
+            js_data_op = extract_data_from_js(js);
         }
+        let js_data = js_data_op.unwrap();
+        let token = get_token(&js_data).await.unwrap();
+        set_token(token);
+        let mut last_token = Instant::now();
         loop {
-            if last_update.elapsed() >= Duration::from_mins(15) {
-                let challenge = fetch_challenge().await;
-                if !challenge.is_err() {
-                    let challenge = challenge.unwrap();
-                    if !challenge.is_empty() {
-                        let res = update_challenge(&challenge).await;
-                        if res {
-                            last_update = Instant::now();
-                        }
-                    }
-                }
+            if last_token.elapsed() >= Duration::from_hours(1) {
+                let token = get_token(&js_data).await.unwrap();
+                set_token(token);
+                last_token = Instant::now();
             }
             if let Ok(res) = cli
                 .get(format!("{SUGGESTION_SOURCE}/stream/221144944"))
@@ -489,47 +380,10 @@ pub async fn get_song(id: &str, _: &str) -> Result<Value, reqwest::Error> {
     }
 }
 
-pub async fn fallback_get_song(
-    qobuz_id: &str,
-    audio_quality: &str,
-) -> Result<Value, reqwest::Error> {
-    let fin_url = concat_strings(Vec::from([
-        FALLBACK,
-        "/api/download-music?track_id=",
-        qobuz_id,
-        "&format_id=",
-        if audio_quality == "flac" { "27" } else { "5" },
-    ]));
-    let client = CLIENT.get().unwrap().clone();
-
-    let mut body = None;
-
-    if let Ok(b) = client
-        .get(&fin_url)
-        .header(USER_AGENT, AGENT)
-        .header(
-            COOKIE,
-            format!(
-                "captcha_verified_at={}",
-                LAST_CHALLENGE
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    .to_string()
-            ),
-        )
-        .header(REFERER, FALLBACK)
-        .send()
-        .await
-    {
-        if let Ok(jsn) = b.error_for_status()?.json::<Value>().await {
-            body = Some(jsn);
-        }
-    }
-
-    if body.is_none() {
-        Ok(empty_json())
-    } else {
-        Ok(body.unwrap())
-    }
+pub async fn fallback_get_song(id: &str, audio_quality: &str) -> Result<Value, reqwest::Error> {
+    Ok(
+        json!({"data": {"url": format!("{}/stream/?isrc={}&format={}", FALLBACK_STREAM, id, if audio_quality == "flac" {"FLAC"} else {"MP3_320"})}}),
+    )
 }
 
 pub async fn search(query: &str) -> Result<Value, reqwest::Error> {
@@ -557,23 +411,39 @@ pub async fn search(query: &str) -> Result<Value, reqwest::Error> {
     Ok(body)
 }
 
+pub async fn get_artist_from_tidal_id<T: AsRef<str>>(id: T) -> Result<Value, reqwest::Error> {
+    let url = format!("{FALLBACK}/artists/{}", id.as_ref());
+    let client = CLIENT.get().unwrap_or(&Client::new()).clone();
+    let res = client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", token()))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Value>()
+        .await?;
+    Ok(res)
+}
+
 pub async fn fallback_search(query: &str) -> Result<Value, reqwest::Error> {
     let mut q = url::Url::parse(FALLBACK).unwrap();
-    q.path_segments_mut().unwrap().push("api");
-    q.path_segments_mut().unwrap().push("get-music");
-    q.query_pairs_mut().append_pair("offset", "0");
-    q.query_pairs_mut().append_pair("q", query);
+    q.path_segments_mut().unwrap().push("searchResults");
+    q.path_segments_mut().unwrap().push(query);
+    q.query_pairs_mut().append_pair("limit", "10");
 
-    let q = q.to_string().replace("+", "%20");
+    let q = q.to_string().replace("+", "%20") + "&include=tracks%2Ctracks.artists";
     let client = CLIENT.get().unwrap().clone();
-
     let mut body = None;
-    if let Ok(b) = client.get(q).header(USER_AGENT, AGENT).send().await {
+    if let Ok(b) = client
+        .get(q)
+        .header(USER_AGENT, AGENT)
+        .header("Authorization", format!("Bearer {}", token()))
+        .send()
+        .await
+    {
         if let Ok(e) = b.error_for_status()?.text().await {
             if let Ok(data) = serde_json::from_str::<Value>(&e) {
-                if let Some(j) = data.get("data").and_then(|v| v.get("tracks")) {
-                    body = Some(j.clone());
-                }
+                body = Some(data.clone());
             }
         }
     }
